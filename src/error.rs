@@ -66,6 +66,20 @@ pub enum ErrorType {
     NoStructure,
     /// Parser Error
     Parser,
+    /// Indentation contains tabs or does not match indent size.
+    InvalidIndentation,
+    /// Malformed `[N]` or `{fields}` array header syntax.
+    InvalidArrayHeader,
+    /// Decoded array count does not match declared `[N]`.
+    ArrayCountMismatch,
+    /// Tabular row has a different field count than the header.
+    TabularRowFieldMismatch,
+    /// Expected `- ` list marker but found another prefix.
+    InvalidListMarker,
+    /// Blank line encountered inside a strict array/tabular block.
+    BlankLineInBlock,
+    /// Header delimiter does not match row delimiter.
+    InvalidDelimiter,
     /// Early End Of File
     Eof,
     /// Generic serde error
@@ -135,6 +149,13 @@ impl PartialEq for ErrorType {
             | (Self::KeyMustBeAString, Self::KeyMustBeAString)
             | (Self::NoStructure, Self::NoStructure)
             | (Self::Parser, Self::Parser)
+            | (Self::InvalidIndentation, Self::InvalidIndentation)
+            | (Self::InvalidArrayHeader, Self::InvalidArrayHeader)
+            | (Self::ArrayCountMismatch, Self::ArrayCountMismatch)
+            | (Self::TabularRowFieldMismatch, Self::TabularRowFieldMismatch)
+            | (Self::InvalidListMarker, Self::InvalidListMarker)
+            | (Self::BlankLineInBlock, Self::BlankLineInBlock)
+            | (Self::InvalidDelimiter, Self::InvalidDelimiter)
             | (Self::Eof, Self::Eof)
             | (Self::Syntax, Self::Syntax)
             | (Self::TrailingData, Self::TrailingData)
@@ -250,6 +271,13 @@ impl Error {
             ErrorType::KeyMustBeAString |
             ErrorType::NoStructure |
             ErrorType::Parser |
+            ErrorType::InvalidIndentation |
+            ErrorType::InvalidArrayHeader |
+            ErrorType::ArrayCountMismatch |
+            ErrorType::TabularRowFieldMismatch |
+            ErrorType::InvalidListMarker |
+            ErrorType::BlankLineInBlock |
+            ErrorType::InvalidDelimiter |
             ErrorType::Syntax |
             ErrorType::TrailingData |
             ErrorType::UnexpectedCharacter |

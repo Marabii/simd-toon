@@ -1,0 +1,3 @@
+services[2]{name|port|tls}:
+  api|443|true
+  admin|8443|false

@@ -1,0 +1,3 @@
+metrics[2]{name	value	unit}:
+  cpu	87	pct
+  mem	512	mb

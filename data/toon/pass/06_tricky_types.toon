@@ -1,0 +1,5 @@
+is_real: true
+is_text: "true"
+count: 42
+model: "42"
+description: "Handles newlines\nproperly"

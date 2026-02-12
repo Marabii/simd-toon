@@ -1,0 +1,7 @@
+user:
+  id: 101
+  details:
+    login: alicew
+    role: admin
+  preferences:
+    theme: dark
