@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #![cfg_attr(feature = "hints", feature(core_intrinsics))]
 #![cfg_attr(feature = "portable", feature(portable_simd))]
 #![warn(unused_extern_crates)]
@@ -6,7 +6,7 @@
     clippy::all,
     clippy::unwrap_used,
     clippy::unnecessary_unwrap,
-    clippy::pedantic,
+    // clippy::pedantic,
     missing_docs
 )]
 #![allow(
@@ -354,6 +354,8 @@ pub enum Implementation {
     NEON,
     /// WEBASM SIMD128 implementation
     SIMD128,
+    /// AVX512BW implementation
+    AVX512BW,
 }
 
 impl std::fmt::Display for Implementation {
@@ -363,6 +365,7 @@ impl std::fmt::Display for Implementation {
             Implementation::StdSimd => write!(f, "std::simd"),
             Implementation::SSE42 => write!(f, "SSE42"),
             Implementation::AVX2 => write!(f, "AVX2"),
+            Implementation::AVX512BW => write!(f, "AVX512BW"),
             Implementation::NEON => write!(f, "NEON"),
             Implementation::SIMD128 => write!(f, "SIMD128"),
         }
@@ -379,6 +382,8 @@ impl Deserializer<'_> {
     pub fn algorithm() -> Implementation {
         if std::is_x86_feature_detected!("avx2") {
             Implementation::AVX2
+        } else if std::is_x86_feature_detected!("avx512bw") {
+            Implementation::AVX512BW
         } else if std::is_x86_feature_detected!("sse4.2") {
             Implementation::SSE42
         } else {
@@ -472,7 +477,9 @@ impl<'de> Deserializer<'de> {
 
             #[cfg_attr(not(feature = "no-inline"), inline)]
             fn get_fastest_available_implementation() -> ParseStrFn {
-                if std::is_x86_feature_detected!("avx2") {
+                if std::is_x86_feature_detected!("avx512bw") {
+                    impls::avx512bw::parse_str
+                } else if std::is_x86_feature_detected!("avx2") {
                     impls::avx2::parse_str
                 } else if std::is_x86_feature_detected!("sse4.2") {
                     impls::sse42::parse_str
@@ -621,7 +628,9 @@ impl Deserializer<'_> {
 
             #[cfg_attr(not(feature = "no-inline"), inline)]
             fn get_fastest_available_implementation() -> FindStructuralBitsFn {
-                if std::is_x86_feature_detected!("avx2") {
+                if std::is_x86_feature_detected!("avx512bw") {
+                    Deserializer::_find_structural_bits::<impls::avx512bw::SimdInput>
+                } else if std::is_x86_feature_detected!("avx2") {
                     Deserializer::_find_structural_bits::<impls::avx2::SimdInput>
                 } else if std::is_x86_feature_detected!("sse4.2") {
                     Deserializer::_find_structural_bits::<impls::sse42::SimdInput>

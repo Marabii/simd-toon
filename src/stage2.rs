@@ -104,6 +104,7 @@ impl<'de> Deserializer<'de> {
         stack: &mut Vec<StackState>,
         res: &mut Vec<Node<'de>>,
     ) -> Result<()> {
+        println!("{:?}", structural_indexes);
         res.clear();
         res.reserve(structural_indexes.len());
         // While a valid json can have at max len/2 (`[[[]]]`)elements that are relevant

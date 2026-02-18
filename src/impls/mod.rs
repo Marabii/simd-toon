@@ -14,6 +14,9 @@ pub(crate) mod portable;
 pub(crate) mod avx2;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+pub(crate) mod avx512bw;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub(crate) mod sse42;
 
 #[cfg(target_arch = "aarch64")]
