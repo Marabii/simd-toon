@@ -10,6 +10,7 @@ pub(crate) unsafe fn parse_str<'invoke, 'de>(
     data: &'invoke [u8],
     _buffer: &'invoke mut [u8],
     idx: usize,
+    _end: usize,
 ) -> Result<&'de str> {
     use ErrorType::{InvalidEscape, InvalidUnicodeCodepoint};
 
@@ -121,7 +122,7 @@ mod test {
         let mut buffer = vec![0; 1024];
 
         let r = unsafe {
-            super::parse_str(input.as_mut_ptr().into(), &input2, buffer.as_mut_slice(), 0)?
+            super::parse_str(input.as_mut_ptr().into(), &input2, buffer.as_mut_slice(), 0, 0)?
         };
         Ok(String::from(r))
     }

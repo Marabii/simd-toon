@@ -3,14 +3,15 @@ use crate::{Deserializer, SIMDJSON_PADDING, Stage1Parse, impls};
 fn test_find_structural_bits<S: Stage1Parse>(input_str: &str, expected: &[u32]) {
     let mut input = input_str.as_bytes().to_vec();
     input.append(&mut vec![0; SIMDJSON_PADDING]);
-    let mut res = Vec::new();
+    let mut structural_indexes = Vec::new();
+    let mut whitespace_indexes = Vec::new();
 
     unsafe {
-        Deserializer::_find_structural_bits::<S>(input.as_slice(), &mut res)
+        Deserializer::_find_structural_bits::<S>(input.as_slice(), &mut structural_indexes, &mut whitespace_indexes)
             .expect("failed to find structural bits");
     };
     println!("{input_str}");
-    assert_eq!(res, expected);
+    assert_eq!(structural_indexes, expected);
 }
 
 fn find_structural_bits_test_cases<S: Stage1Parse>() {

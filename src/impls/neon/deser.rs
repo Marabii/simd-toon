@@ -47,6 +47,7 @@ pub(crate) fn parse_str<'invoke, 'de>(
     data: &'invoke [u8],
     buffer: &'invoke mut [u8],
     mut idx: usize,
+    _end: usize,
 ) -> Result<&'de str> {
     use ErrorType::{InvalidEscape, InvalidUnicodeCodepoint};
     let input = input.input;

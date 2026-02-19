@@ -44,7 +44,6 @@ mod numberparse;
 mod safer_unchecked;
 mod stringparse;
 
-use macros::static_cast_u64;
 use safer_unchecked::GetSaferUnchecked;
 use stage2::StackState;
 use tape::Value;
@@ -90,6 +89,7 @@ use simdutf8::basic::imp::ChunkedUtf8Validator;
 pub struct Buffers {
     string_buffer: Vec<u8>,
     structural_indexes: Vec<u32>,
+    whitespace_indexes: Vec<u32>,
     input_buffer: AlignedBuf,
     stage2_stack: Vec<StackState>,
 }
@@ -112,6 +112,7 @@ impl Buffers {
         Self {
             string_buffer: Vec::with_capacity(input_len + SIMDJSON_PADDING),
             structural_indexes: Vec::with_capacity(heuristic_index_cout),
+            whitespace_indexes: Vec::with_capacity(heuristic_index_cout),
             input_buffer: AlignedBuf::with_capacity(input_len + SIMDJSON_PADDING * 2),
             stage2_stack: Vec::with_capacity(heuristic_index_cout),
         }
@@ -329,6 +330,7 @@ type ParseStrFn = for<'invoke, 'de> unsafe fn(
     &'invoke [u8],
     &'invoke mut [u8],
     usize,
+    usize
 ) -> std::result::Result<&'de str, error::Error>;
 #[cfg(all(
     feature = "runtime-detection",
@@ -337,6 +339,7 @@ type ParseStrFn = for<'invoke, 'de> unsafe fn(
 type FindStructuralBitsFn = unsafe fn(
     input: &[u8],
     structural_indexes: &mut Vec<u32>,
+    whitespace_indexes: &mut Vec<u32>,
 ) -> std::result::Result<(), ErrorType>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -466,6 +469,7 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize
     ) -> Result<&'de str>
     where
         'de: 'invoke,
@@ -498,6 +502,7 @@ impl<'de> Deserializer<'de> {
                 data: &'invoke [u8],
                 buffer: &'invoke mut [u8],
                 idx: usize,
+                end: usize,
             ) -> core::result::Result<&'de str, error::Error>
             where
                 'de: 'invoke,
@@ -505,13 +510,13 @@ impl<'de> Deserializer<'de> {
                 unsafe {
                     let fun = get_fastest_available_implementation();
                     FN.store(fun as FnRaw, Ordering::Relaxed);
-                    (fun)(input, data, buffer, idx)
+                    (fun)(input, data, buffer, idx, end)
                 }
             }
 
             let input: SillyWrapper<'de> = SillyWrapper::from(input);
             let fun = FN.load(Ordering::Relaxed);
-            mem::transmute::<FnRaw, ParseStrFn>(fun)(input, data, buffer, idx)
+            mem::transmute::<FnRaw, ParseStrFn>(fun)(input, data, buffer, idx, end)
         }
     }
     #[cfg_attr(not(feature = "no-inline"), inline)]
@@ -531,12 +536,13 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str>
     where
         'de: 'invoke,
     {
         let input: SillyWrapper<'de> = SillyWrapper::from(input);
-        unsafe { impls::native::parse_str(input, data, buffer, idx) }
+        unsafe { impls::native::parse_str(input, data, buffer, idx, end) }
     }
     #[cfg_attr(not(feature = "no-inline"), inline)]
     #[cfg(all(feature = "portable", not(feature = "runtime-detection")))]
@@ -545,12 +551,13 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str>
     where
         'de: 'invoke,
     {
         let input: SillyWrapper<'de> = SillyWrapper::from(input);
-        impls::portable::parse_str(input, data, buffer, idx)
+        impls::portable::parse_str(input, data, buffer, idx, end)
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline)]
@@ -564,9 +571,10 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str> {
         let input: SillyWrapper<'de> = SillyWrapper::from(input);
-        unsafe { impls::avx2::parse_str(input, data, buffer, idx) }
+        unsafe { impls::avx2::parse_str(input, data, buffer, idx, end) }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline)]
@@ -581,9 +589,10 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str> {
         let input: SillyWrapper<'de> = SillyWrapper::from(input);
-        unsafe { impls::sse42::parse_str(input, data, buffer, idx) }
+        unsafe { impls::sse42::parse_str(input, data, buffer, idx, end) }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline)]
@@ -593,9 +602,10 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str> {
         let input: SillyWrapper = SillyWrapper::from(input);
-        impls::neon::parse_str(input, data, buffer, idx)
+        impls::neon::parse_str(input, data, buffer, idx, end)
     }
     #[cfg_attr(not(feature = "no-inline"), inline)]
     #[cfg(all(target_feature = "simd128", not(feature = "portable")))]
@@ -604,9 +614,10 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
+        end: usize,
     ) -> Result<&'de str> {
         let input: SillyWrapper<'de> = SillyWrapper::from(input);
-        impls::simd128::parse_str(input, data, buffer, idx)
+        impls::simd128::parse_str(input, data, buffer, idx, end)
     }
 }
 
@@ -620,6 +631,7 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
         unsafe {
             use std::sync::atomic::{AtomicPtr, Ordering};
@@ -647,16 +659,21 @@ impl Deserializer<'_> {
             unsafe fn get_fastest(
                 input: &[u8],
                 structural_indexes: &mut Vec<u32>,
+                whitespace_indexes: &mut Vec<u32>,
             ) -> core::result::Result<(), error::ErrorType> {
                 unsafe {
                     let fun = get_fastest_available_implementation();
                     FN.store(fun as FnRaw, Ordering::Relaxed);
-                    (fun)(input, structural_indexes)
+                    (fun)(input, structural_indexes, whitespace_indexes)
                 }
             }
 
             let fun = FN.load(Ordering::Relaxed);
-            mem::transmute::<FnRaw, FindStructuralBitsFn>(fun)(input, structural_indexes)
+            mem::transmute::<FnRaw, FindStructuralBitsFn>(fun)(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
         }
     }
 
@@ -675,6 +692,7 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
         // This is a nasty hack, we don't have a chunked implementation for native rust
         // so we validate UTF8 ahead of time
@@ -684,7 +702,11 @@ impl Deserializer<'_> {
         };
         #[cfg(not(feature = "portable"))]
         unsafe {
-            Self::_find_structural_bits::<impls::native::SimdInput>(input, structural_indexes)
+            Self::_find_structural_bits::<impls::native::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
         }
     }
 
@@ -693,9 +715,14 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
         unsafe {
-            Self::_find_structural_bits::<impls::portable::SimdInput>(input, structural_indexes)
+            Self::_find_structural_bits::<impls::portable::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
         }
     }
 
@@ -708,8 +735,15 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
-        unsafe { Self::_find_structural_bits::<impls::avx2::SimdInput>(input, structural_indexes) }
+        unsafe {
+            Self::_find_structural_bits::<impls::avx2::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
+        }
     }
 
     #[cfg(all(
@@ -722,8 +756,15 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
-        unsafe { Self::_find_structural_bits::<impls::sse42::SimdInput>(input, structural_indexes) }
+        unsafe {
+            Self::_find_structural_bits::<impls::sse42::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
+        }
     }
 
     #[cfg(all(target_arch = "aarch64", not(feature = "portable")))]
@@ -731,8 +772,15 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
-        unsafe { Self::_find_structural_bits::<impls::neon::SimdInput>(input, structural_indexes) }
+        unsafe {
+            Self::_find_structural_bits::<impls::neon::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
+        }
     }
 
     #[cfg(all(target_feature = "simd128", not(feature = "portable")))]
@@ -740,9 +788,14 @@ impl Deserializer<'_> {
     pub(crate) unsafe fn find_structural_bits(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
         unsafe {
-            Self::_find_structural_bits::<impls::simd128::SimdInput>(input, structural_indexes)
+            Self::_find_structural_bits::<impls::simd128::SimdInput>(
+                input,
+                structural_indexes,
+                whitespace_indexes,
+            )
         }
     }
 }
@@ -839,8 +892,12 @@ impl<'de> Deserializer<'de> {
             // safety: all bytes are initialized
             input_buffer.set_len(simd_safe_len);
 
-            Self::find_structural_bits(input, &mut buffer.structural_indexes)
-                .map_err(Error::generic)?;
+            Self::find_structural_bits(
+                input,
+                &mut buffer.structural_indexes,
+                &mut buffer.whitespace_indexes,
+            )
+            .map_err(Error::generic)?;
         };
 
         Self::build_tape(
@@ -848,6 +905,7 @@ impl<'de> Deserializer<'de> {
             input_buffer,
             &mut buffer.string_buffer,
             &buffer.structural_indexes,
+            &buffer.whitespace_indexes,
             &mut buffer.stage2_stack,
             tape,
         )
@@ -892,12 +950,15 @@ impl<'de> Deserializer<'de> {
     pub(crate) unsafe fn _find_structural_bits<S: Stage1Parse>(
         input: &[u8],
         structural_indexes: &mut Vec<u32>,
+        whitespace_indexes: &mut Vec<u32>,
     ) -> std::result::Result<(), ErrorType> {
         let len = input.len();
         // 8 is a heuristic number to estimate it turns out a rate of 1/8 structural characters
         // leads almost never to relocations.
         structural_indexes.clear();
         structural_indexes.reserve(len / 8);
+        whitespace_indexes.clear();
+        whitespace_indexes.reserve(len / 8);
 
         let mut utf8_validator = unsafe { S::Utf8Validator::new() };
 
@@ -960,6 +1021,12 @@ impl<'de> Deserializer<'de> {
             let mut whitespace: u64 = 0;
             unsafe { input.find_whitespace_and_structurals(&mut whitespace, &mut structurals) };
 
+            // Flatten only the first index of each consecutive whitespace run.
+            // run_starts isolates the lowest set bit in each contiguous group of 1s.
+            // Pass (idx + SIMDINPUT_LENGTH) so flatten_bits's internal wrapping_sub(64) yields idx.
+            let run_starts = whitespace & !(whitespace.wrapping_shl(1));
+            unsafe { S::flatten_bits(whitespace_indexes, (idx + SIMDINPUT_LENGTH) as u32, run_starts) };
+
             // fixup structurals to reflect quotes and add pseudo-structural characters
             structurals = S::finalize_structurals(
                 structurals,
@@ -1005,6 +1072,12 @@ impl<'de> Deserializer<'de> {
 
             let mut whitespace: u64 = 0;
             unsafe { input.find_whitespace_and_structurals(&mut whitespace, &mut structurals) };
+
+            // Flatten only the first index of each consecutive whitespace run.
+            // run_starts isolates the lowest set bit in each contiguous group of 1s.
+            // Pass (idx + SIMDINPUT_LENGTH) so flatten_bits's internal wrapping_sub(64) yields idx.
+            let run_starts = whitespace & !(whitespace.wrapping_shl(1));
+            unsafe { S::flatten_bits(whitespace_indexes, (idx + SIMDINPUT_LENGTH) as u32, run_starts) };
 
             // fixup structurals to reflect quotes and add pseudo-structural characters
             structurals = S::finalize_structurals(

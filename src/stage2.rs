@@ -1,58 +1,12 @@
 #![allow(dead_code)]
 use crate::charutils::is_not_structural_or_whitespace;
-use crate::macros::unlikely;
 use crate::safer_unchecked::GetSaferUnchecked;
 use crate::value::tape::Node;
 use crate::{Deserializer, Error, ErrorType, InternalError, Result};
 use value_trait::StaticNode;
 
-#[cfg_attr(not(feature = "no-inline"), inline)]
-pub fn is_valid_true_atom(loc: &[u8]) -> bool {
-    debug_assert!(loc.len() >= 8, "loc too short for a u64 read");
-
-    // TODO is this expensive?
-    let mut error: u64;
-    unsafe {
-        //let tv: u64 = *(b"true    ".as_ptr() as *const u64);
-        // this is the same:
-        const TV: u64 = 0x00_00_00_00_65_75_72_74;
-        const MASK4: u64 = 0x00_00_00_00_ff_ff_ff_ff;
-
-        let locval: u64 = loc.as_ptr().cast::<u64>().read_unaligned();
-
-        error = (locval & MASK4) ^ TV;
-        error |= u64::from(is_not_structural_or_whitespace(*loc.get_kinda_unchecked(4)));
-    }
-    error == 0
-}
-
 macro_rules! get {
     ($a:expr_2021, $i:expr_2021) => {{ unsafe { $a.get_kinda_unchecked($i) } }};
-}
-
-#[cfg_attr(not(feature = "no-inline"), inline)]
-pub fn is_valid_false_atom(loc: &[u8]) -> bool {
-    const FV: u64 = 0x00_00_00_65_73_6c_61_66;
-    const MASK5: u64 = 0x00_00_00_ff_ff_ff_ff_ff;
-
-    debug_assert!(loc.len() >= 8, "loc too short for a u64 read");
-
-    // TODO: this is ugly and probably copies data every time
-    let mut error: u64;
-    //let fv: u64 = *(b"false   ".as_ptr() as *const u64);
-    // this is the same:
-
-    let locval: u64 = unsafe { loc.as_ptr().cast::<u64>().read_unaligned() };
-
-    // FIXME the original code looks like this:
-    // error = ((locval & mask5) ^ fv) as u32;
-    // but that fails on falsy as the u32 conversion
-    // will mask the error on the y so we re-write it
-    // it would be interesting what the consequences are
-    error = (locval & MASK5) ^ FV;
-    error |= u64::from(is_not_structural_or_whitespace(*get!(loc, 5)));
-
-    error == 0
 }
 
 #[cfg_attr(not(feature = "no-inline"), inline)]
@@ -101,10 +55,12 @@ impl<'de> Deserializer<'de> {
         input2: &[u8],
         buffer: &mut [u8],
         structural_indexes: &[u32],
+        whitespace_indexes: &[u32],
         stack: &mut Vec<StackState>,
         res: &mut Vec<Node<'de>>,
     ) -> Result<()> {
-        println!("{:?}", structural_indexes);
+        println!("structural indexes: {:?}", structural_indexes);
+        println!("whitespace indexes: {:?}", whitespace_indexes);
         res.clear();
         res.reserve(structural_indexes.len());
         // While a valid json can have at max len/2 (`[[[]]]`)elements that are relevant
@@ -184,12 +140,13 @@ impl<'de> Deserializer<'de> {
         }
 
         macro_rules! insert_str {
-            () => {
+            ($end:expr) => {
                 insert_res!(Node::String(s2try!(Self::parse_str_(
                     input.as_mut_ptr(),
                     &input2,
                     buffer,
-                    idx
+                    idx,
+                    $end
                 ))));
             };
         }
@@ -224,7 +181,7 @@ impl<'de> Deserializer<'de> {
                         cnt += 1;
                         update_char!();
                         if c == b'"' {
-                            insert_str!();
+                            insert_str!(0);
                             goto!(ObjectKey);
                         }
                         fail!(ErrorType::ExpectedObjectKey);
@@ -255,7 +212,7 @@ impl<'de> Deserializer<'de> {
                 update_char!();
                 match c {
                     b'"' => {
-                        insert_str!();
+                        insert_str!(0);
                         goto!(ObjectKey)
                     }
                     b'}' => {
@@ -293,113 +250,86 @@ impl<'de> Deserializer<'de> {
                 return Err(Error::new_c(idx, c as char, $t));
             };
         }
-        // State start, we pull this outside of the
-        // loop to reduce the number of required checks
+        // top-level
+        // structural_indexes[0]: opening `"` of the key token.
+        update_char!();
+        let key_start = idx; // saved here — idx will advance on the next call
+
+        // structural_indexes[1]: reveals what follows the key.
         update_char!();
         match c {
-            b'{' => {
-                unsafe {
-                    stack_ptr.add(depth).write(StackState::Start);
-                }
+            b'[' => {
+                // Array-notation key: "tags"[3]: "a","b","c"
+                // TODO: implement array-notation top-level parsing
+                fail!(ErrorType::NoStructure);
+            }
+            b':' => {
+                unsafe { stack_ptr.add(depth).write(StackState::Start) };
 
+                // Object header placeholder; len/count back-filled by ScopeEnd.
                 last_start = r_i;
                 insert_res!(Node::Object { len: 0, count: 0 });
-
                 depth += 1;
-                cnt = 1;
+                cnt = 1; // proactively count the one key-value pair we are about to parse
 
+                // Key: from key_start up to (not including) the `:` at idx.
+                insert_res!(Node::String(s2try!(unsafe {
+                    Self::parse_str_(input.as_mut_ptr(), input2, buffer, key_start, idx)
+                })));
+
+                // structural_indexes[2]: first byte of the value token.
                 update_char!();
-                match c {
-                    b'"' => {
-                        insert_str!();
-                        state = State::ObjectKey;
-                    }
-                    b'}' => {
-                        cnt = 0;
-                        state = State::ScopeEnd;
-                    }
-                    _c => {
-                        fail!(ErrorType::ExpectedObjectContent);
-                    }
-                }
-            }
-            b'[' => {
-                unsafe {
-                    stack_ptr.add(depth).write(StackState::Start);
+
+                if c == b'\n' {
+                    // Value is on the next line → nested object scope.
+                    // TODO: implement nested-object (indented) parsing
+                    fail!(ErrorType::NoStructure);
                 }
 
-                last_start = r_i;
-                insert_res!(Node::Array { len: 0, count: 0 });
-
-                depth += 1;
-                cnt = 1;
-
-                update_char!();
-                if c == b']' {
-                    cnt = 0;
-                    state = State::ScopeEnd;
+                // Value: from idx up to the next structural (must be `\n`),
+                // or to the true document end if no further structural exists.
+                let value_start = idx;
+                let value_end = if i < structural_indexes.len() {
+                    let next = *get!(structural_indexes, i) as usize;
+                    if *get!(input2, next) != b'\n' {
+                        fail!(ErrorType::NoStructure);
+                    }
+                    next
                 } else {
-                    state = State::MainArraySwitch;
-                }
-            }
-            b't' => {
-                unsafe {
-                    if !is_valid_true_atom(get!(input2, idx..)) {
-                        fail!(ErrorType::ExpectedTrue);
-                    }
+                    // No trailing newline — value runs to the end of the document.
+                    input.len()
                 };
-                insert_res!(Node::Static(StaticNode::Bool(true)));
-                if i == structural_indexes.len() {
-                    success!();
-                }
-                fail!(ErrorType::TrailingData);
-            }
-            b'f' => {
-                unsafe {
-                    if !is_valid_false_atom(get!(input2, idx..)) {
-                        fail!(ErrorType::ExpectedFalse);
-                    }
-                };
-                insert_res!(Node::Static(StaticNode::Bool(false)));
-                if i == structural_indexes.len() {
-                    success!();
-                }
-                fail!(ErrorType::TrailingData);
-            }
-            b'n' => {
-                unsafe {
-                    if !is_valid_null_atom(get!(input2, idx..)) {
-                        fail!(ErrorType::ExpectedNull);
-                    }
-                };
-                insert_res!(Node::Static(StaticNode::Null));
-                if i == structural_indexes.len() {
-                    success!();
-                }
-                fail!(ErrorType::TrailingData);
-            }
-            b'"' => {
-                insert_str!();
-                if i == structural_indexes.len() {
-                    success!();
-                }
-                fail!(ErrorType::TrailingData);
-            }
-            b'-' => {
-                insert_res!(Node::Static(s2try!(Self::parse_number(idx, input2, true))));
 
-                if i == structural_indexes.len() {
-                    success!();
-                }
-                fail!(ErrorType::TrailingData);
-            }
-            b'0'..=b'9' => {
-                insert_res!(Node::Static(s2try!(Self::parse_number(idx, input2, false))));
+                let value_bytes_trimmed = &input2[value_start..value_end];
 
-                if i == structural_indexes.len() {
-                    success!();
+                // AVX-512BW SIMD classifier: Number / Null / String / Boolean.
+                let basic_type =
+                    unsafe { crate::impls::avx512bw::classify_bytes_avx512(value_bytes_trimmed) };
+
+                match basic_type {
+                    crate::impls::avx512bw::BasicTypes::Number => {
+                        let is_negative = *get!(input2, value_start) == b'-';
+                        insert_res!(Node::Static(s2try!(Self::parse_number(
+                            value_start,
+                            input2,
+                            is_negative,
+                        ))));
+                    }
+                    crate::impls::avx512bw::BasicTypes::Null => {
+                        insert_res!(Node::Static(StaticNode::Null));
+                    }
+                    crate::impls::avx512bw::BasicTypes::String => {
+                        insert_res!(Node::String(s2try!(unsafe {
+                            Self::parse_str_(input.as_mut_ptr(), input2, buffer, idx, value_end)
+                        })));
+                    }
+                    crate::impls::avx512bw::BasicTypes::Boolean(b) => {
+                        insert_res!(Node::Static(StaticNode::Bool(b)));
+                    }
                 }
-                fail!(ErrorType::TrailingData);
+
+                // ScopeEnd will back-fill the Object header (len, count).
+                state = State::ScopeEnd;
             }
             _ => {
                 fail!();
@@ -418,21 +348,7 @@ impl<'de> Deserializer<'de> {
                     update_char!();
                     match c {
                         b'"' => {
-                            insert_str!();
-                            object_continue!();
-                        }
-                        b't' => {
-                            insert_res!(Node::Static(StaticNode::Bool(true)));
-                            if !is_valid_true_atom(get!(input2, idx..)) {
-                                fail!(ErrorType::ExpectedTrue);
-                            }
-                            object_continue!();
-                        }
-                        b'f' => {
-                            insert_res!(Node::Static(StaticNode::Bool(false)));
-                            if !is_valid_false_atom(get!(input2, idx..)) {
-                                fail!(ErrorType::ExpectedFalse);
-                            }
+                            insert_str!(0);
                             object_continue!();
                         }
                         b'n' => {
@@ -541,21 +457,7 @@ impl<'de> Deserializer<'de> {
                     // on paths that can accept a close square brace (post-, and at start)
                     match c {
                         b'"' => {
-                            insert_str!();
-                            array_continue!();
-                        }
-                        b't' => {
-                            insert_res!(Node::Static(StaticNode::Bool(true)));
-                            if !is_valid_true_atom(get!(input2, idx..)) {
-                                fail!(ErrorType::ExpectedTrue);
-                            }
-                            array_continue!();
-                        }
-                        b'f' => {
-                            insert_res!(Node::Static(StaticNode::Bool(false)));
-                            if !is_valid_false_atom(get!(input2, idx..)) {
-                                fail!(ErrorType::ExpectedFalse);
-                            }
+                            insert_str!(0);
                             array_continue!();
                         }
                         b'n' => {
@@ -620,23 +522,6 @@ mod test {
     use super::*;
 
     #[test]
-    fn true_atom() {
-        assert!(is_valid_true_atom(b"true    "));
-        assert!(!is_valid_true_atom(b"tru     "));
-        assert!(!is_valid_true_atom(b" rue    "));
-    }
-    #[test]
-    fn false_atom() {
-        assert!(is_valid_false_atom(b"false   "));
-        assert!(!is_valid_false_atom(b"falze   "));
-        assert!(!is_valid_false_atom(b"falsy   "));
-        assert!(!is_valid_false_atom(b"fals    "));
-        assert!(!is_valid_false_atom(b" alse   "));
-
-        //unsafe { assert!(!is_valid_false_atom(b"fals    " as *const u8)) }
-        //        unsafe { assert!(!is_valid_false_atom(b"false   " as *const u8)) }
-    }
-    #[test]
     fn null_atom() {
         assert!(is_valid_null_atom(b"null    "));
         assert!(!is_valid_null_atom(b"nul     "));
@@ -692,7 +577,7 @@ mod test {
         let mut buffer = vec![0; 1024];
 
         let s = unsafe {
-            Deserializer::parse_str_(input.as_mut_ptr(), &input2, buffer.as_mut_slice(), 0)?
+            Deserializer::parse_str_(input.as_mut_ptr(), &input2, buffer.as_mut_slice(), 0, 0)?
         };
         assert_eq!(r#"{"arg":"test"}"#, s);
         Ok(())

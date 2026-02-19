@@ -74,7 +74,7 @@ fn count5() {
 
 #[test]
 fn test_tape_object_simple() {
-    let mut d = String::from(r#"name: ha\"mza"#);
+    let mut d = String::from(r#""{arg":"test""#);
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
