@@ -148,15 +148,16 @@ impl<'de> Deserializer<'de> {
             };
         }
 
-        macro_rules! get_str_end {
-            ($start:expr) => {{
+        macro_rules! get_value_end {
+            ($start:expr, $delim:expr) => {{
                 // Find the hard boundary
                 let mut end = if c == b':' {
                     idx
                 } else {
                     if i < structural_indexes.len() {
                         let next = *get!(structural_indexes, i) as usize;
-                        if *get!(input2, next) != b'\n' {
+                        let next_c = *get!(input2, next);
+                        if next_c != b'\n' && next_c != $delim {
                             fail!(ErrorType::NoStructure);
                         }
                         next
@@ -165,7 +166,7 @@ impl<'de> Deserializer<'de> {
                     }
                 };
 
-                // Fast Right-to-Left Trim
+                // Right-to-Left Trim
                 while end > $start {
                     let prev_char = *get!(input2, end - 1);
                     if prev_char == b' ' {
@@ -221,12 +222,7 @@ impl<'de> Deserializer<'de> {
         c = *get!(input2, second_idx);
 
         match c {
-            b'[' => {
-                // Array-notation key: tags[3]: a,b,c
-                // TODO: implement array-notation top-level parsing
-                fail!(ErrorType::NoStructure);
-            }
-            b':' => {
+            b'[' | b':' => {
                 unsafe { stack_ptr.add(depth).write(StackState::Start) };
                 last_start = r_i;
                 insert_res!(Node::Object { len: 0, count: 0 });
@@ -252,14 +248,161 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let key_start = idx;
+                    // Trim trailing spaces from key name (key ends where '[' begins)
+                    let key_end = get_value_end!(key_start, b'[');
 
                     update_char!();
-                    if c != b':' {
+                    if c == b'[' {
+                        // Array key: key[N]: val1,val2,...
+
+                        // Parse [N]
+                        update_char!();
+                        let digit_start = idx;
+                        update_char!();
+                        if c != b']' {
+                            fail!(ErrorType::InvalidArrayHeader);
+                        }
+                        let digit_end = idx;
+                        let declared_len =
+                            s2try!(Self::parse_array_len(input2, digit_start, digit_end));
+
+                        // Expect ':'
+                        update_char!();
+                        if c != b':' {
+                            fail!(ErrorType::InvalidArrayHeader);
+                        }
+
+                        cnt += 1;
+                        insert_str!(key_start, key_end);
+
+                        // Empty array: emit immediately
+                        if declared_len == 0 {
+                            insert_res!(Node::Array { len: 0, count: 0 });
+                            if i >= structural_indexes.len() {
+                                goto!(State::ScopeEnd);
+                            }
+                            update_char!();
+                            if c != b'\n' {
+                                fail!(ErrorType::Syntax);
+                            }
+                            let newline_idx = idx;
+                            if i >= structural_indexes.len() {
+                                goto!(State::ScopeEnd);
+                            }
+                            let next_idx = *get!(structural_indexes, i) as usize;
+                            let next_c = *get!(input2, next_idx);
+                            if next_c == b'\n' {
+                                fail!(ErrorType::Syntax);
+                            }
+                            let actual_ws = next_idx - newline_idx - 1;
+                            let sibling_ws = (depth - 1) * 2;
+                            if actual_ws == sibling_ws {
+                                goto!(State::ObjectKey);
+                            }
+                            if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
+                                goto!(State::ScopeEnd);
+                            }
+                            fail!(ErrorType::InvalidIndentation);
+                        }
+
+                        // Peek ahead to distinguish inline from block
+                        if i >= structural_indexes.len() {
+                            fail!(ErrorType::ExpectedArrayContent);
+                        }
+                        let peek_c = *get!(input2, *get!(structural_indexes, i) as usize);
+                        if peek_c == b'\n' {
+                            // Block arrays not yet implemented
+                            fail!(ErrorType::NoStructure);
+                        }
+
+                        // Inline array: comma-separated values on this line
+                        let array_tape_start = r_i;
+                        insert_res!(Node::Array {
+                            len: declared_len,
+                            count: 0
+                        });
+
+                        let mut elem_count: usize = 0;
+                        loop {
+                            update_char!();
+                            let value_start = idx;
+                            let value_end = get_value_end!(value_start, b',');
+
+                            let value_bytes = &input2[value_start..value_end];
+                            let basic_type = unsafe {
+                                crate::impls::avx512bw::classify_bytes_avx512(value_bytes)
+                            };
+                            match basic_type {
+                                crate::impls::avx512bw::BasicTypes::Number => {
+                                    let is_negative = *get!(input2, value_start) == b'-';
+                                    insert_res!(Node::Static(s2try!(Self::parse_number(
+                                        value_start,
+                                        input2,
+                                        is_negative
+                                    ))));
+                                }
+                                crate::impls::avx512bw::BasicTypes::String => {
+                                    insert_str!(value_start, value_end);
+                                }
+                                crate::impls::avx512bw::BasicTypes::Boolean(b) => {
+                                    insert_res!(Node::Static(StaticNode::Bool(b)));
+                                }
+                            }
+                            elem_count += 1;
+
+                            // EOF with no trailing newline — array ends here
+                            if i >= structural_indexes.len() {
+                                break;
+                            }
+                            update_char!();
+                            if c == b',' {
+                                // continue to next element
+                            } else if c == b'\n' {
+                                break;
+                            } else {
+                                fail!(ErrorType::Syntax);
+                            }
+                        }
+
+                        // Backfill Array count
+                        unsafe {
+                            match *res_ptr.add(array_tape_start) {
+                                Node::Array { ref mut count, .. } => {
+                                    *count = r_i - array_tape_start - 1;
+                                }
+                                _ => unreachable!("array backfill expects an array node"),
+                            }
+                        }
+
+                        if elem_count != declared_len {
+                            fail!(ErrorType::ArrayCountMismatch);
+                        }
+
+                        // Scope continuation — idx now holds the '\n' position
+                        let newline_idx = idx;
+                        if i >= structural_indexes.len() {
+                            goto!(State::ScopeEnd);
+                        }
+                        let next_idx = *get!(structural_indexes, i) as usize;
+                        let next_c = *get!(input2, next_idx);
+                        if next_c == b'\n' {
+                            fail!(ErrorType::Syntax);
+                        }
+                        let actual_ws = next_idx - newline_idx - 1;
+                        let sibling_ws = (depth - 1) * 2;
+                        if actual_ws == sibling_ws {
+                            goto!(State::ObjectKey);
+                        }
+                        if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
+                            goto!(State::ScopeEnd);
+                        }
+                        fail!(ErrorType::InvalidIndentation);
+                    } else if c != b':' {
                         fail!(ErrorType::ExpectedObjectColon);
                     }
 
                     cnt += 1;
-                    let key_end = get_str_end!(key_start);
+                    let key_end = get_value_end!(key_start, b'\n');
                     insert_str!(key_start, key_end);
 
                     update_char!();
@@ -308,7 +451,7 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let value_start = idx;
-                    let value_end = get_str_end!(value_start);
+                    let value_end = get_value_end!(value_start, b'\n');
 
                     let value_bytes = &input2[value_start..value_end];
                     let basic_type =
@@ -445,6 +588,26 @@ impl<'de> Deserializer<'de> {
                 }
             }
         }
+    }
+
+    /// Parse an ASCII decimal number from `input2[start..end]`.
+    /// Returns `Err(InvalidArrayHeader)` if the slice is empty or contains non-digit bytes.
+    fn parse_array_len(input2: &[u8], start: usize, end: usize) -> Result<usize> {
+        if start >= end {
+            return Err(Error::generic(ErrorType::InvalidArrayHeader));
+        }
+        let mut n: usize = 0;
+        for (pos, &b) in input2[start..end].iter().enumerate() {
+            if !b.is_ascii_digit() {
+                return Err(Error::new_c(
+                    start + pos,
+                    b as char,
+                    ErrorType::InvalidArrayHeader,
+                ));
+            }
+            n = n * 10 + (b - b'0') as usize;
+        }
+        Ok(n)
     }
 }
 

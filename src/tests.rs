@@ -96,7 +96,7 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from("name           :Hamza         \nage         :          21");
+    let mut d = String::from("tags[3]: a,b,c");
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
@@ -118,6 +118,99 @@ fn test_tape_object_escaped() {
             Node::Static(StaticNode::I64(1)),
             Node::Static(StaticNode::I64(2)),
             Node::Static(StaticNode::I64(3))
+        ]
+    );
+}
+
+#[test]
+fn test_tape_inline_string_array() {
+    let mut d = String::from("tags[3]: rust,parser,simd");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 5 },
+            Node::String("tags"),
+            Node::Array { len: 3, count: 3 },
+            Node::String("rust"),
+            Node::String("parser"),
+            Node::String("simd"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_inline_number_array() {
+    let mut d = String::from("numbers[3]: 1,2,3");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    println!("{:?}", simd.tape);
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 5 },
+            Node::String("numbers"),
+            Node::Array { len: 3, count: 3 },
+            Node::Static(StaticNode::U64(1)),
+            Node::Static(StaticNode::U64(2)),
+            Node::Static(StaticNode::U64(3)),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_inline_bool_array() {
+    let mut d = String::from("flags[3]: true,false,true");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 5 },
+            Node::String("flags"),
+            Node::Array { len: 3, count: 3 },
+            Node::Static(StaticNode::Bool(true)),
+            Node::Static(StaticNode::Bool(false)),
+            Node::Static(StaticNode::Bool(true)),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_empty_array() {
+    let mut d = String::from("empty[0]:\nother: val");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 2, count: 4 },
+            Node::String("empty"),
+            Node::Array { len: 0, count: 0 },
+            Node::String("other"),
+            Node::String("val"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_array_with_sibling_key() {
+    // Array followed by another key-value pair
+    let mut d = String::from("tags[3]: rust,parser,simd\nver: 1");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 2, count: 7 },
+            Node::String("tags"),
+            Node::Array { len: 3, count: 3 },
+            Node::String("rust"),
+            Node::String("parser"),
+            Node::String("simd"),
+            Node::String("ver"),
+            Node::Static(StaticNode::U64(1)),
         ]
     );
 }
