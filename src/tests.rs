@@ -74,11 +74,34 @@ fn count5() {
 
 #[test]
 fn test_tape_object_simple() {
-    let mut d = String::from(r#""{arg":"test""#);
+    let mut d = String::from("a:\n  b:\n    c: Hamza\n  d: Dadda");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("");
+    println!("{:?}", simd.tape);
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 8 },
+            Node::String("a"),
+            Node::Object { len: 2, count: 6 },
+            Node::String("b"),
+            Node::Object { len: 1, count: 2 },
+            Node::String("c"),
+            Node::String("Hamza"),
+            Node::String("d"),
+            Node::String("Dadda")
+        ]
+    );
+}
+
+#[test]
+fn playground() {
+    let mut d = String::from("a:\n  b:\n");
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
 }
+
 
 #[test]
 fn test_tape_object_escaped() {

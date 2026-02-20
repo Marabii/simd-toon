@@ -29,7 +29,7 @@ pub(crate) unsafe fn parse_str<'invoke, 'de>(
     data: &'invoke [u8],
     buffer: &'invoke mut [u8],
     mut idx: usize,
-    _end: usize
+    _end: usize,
 ) -> Result<&'de str> {
     unsafe {
         use ErrorType::{InvalidEscape, InvalidUnicodeCodepoint};

@@ -7,7 +7,6 @@ use crate::charutils::is_not_structural_or_whitespace;
 
 #[derive(Debug, PartialEq)]
 pub enum BasicTypes {
-    Null,
     Number,
     String,
     Boolean(bool),
@@ -30,10 +29,6 @@ pub unsafe fn classify_bytes_avx512(input: &[u8]) -> BasicTypes {
     unsafe {
         let mut ptr = input.as_ptr();
         let mut len = input.len();
-
-        if len == 0 {
-            return BasicTypes::Null;
-        }
 
         // Handle negative numbers: skip the first byte if it's a '-'
         if *ptr == b'-' {

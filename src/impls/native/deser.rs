@@ -122,7 +122,13 @@ mod test {
         let mut buffer = vec![0; 1024];
 
         let r = unsafe {
-            super::parse_str(input.as_mut_ptr().into(), &input2, buffer.as_mut_slice(), 0, 0)?
+            super::parse_str(
+                input.as_mut_ptr().into(),
+                &input2,
+                buffer.as_mut_slice(),
+                0,
+                0,
+            )?
         };
         Ok(String::from(r))
     }

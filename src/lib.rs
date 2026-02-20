@@ -330,7 +330,7 @@ type ParseStrFn = for<'invoke, 'de> unsafe fn(
     &'invoke [u8],
     &'invoke mut [u8],
     usize,
-    usize
+    usize,
 ) -> std::result::Result<&'de str, error::Error>;
 #[cfg(all(
     feature = "runtime-detection",
@@ -469,7 +469,7 @@ impl<'de> Deserializer<'de> {
         data: &'invoke [u8],
         buffer: &'invoke mut [u8],
         idx: usize,
-        end: usize
+        end: usize,
     ) -> Result<&'de str>
     where
         'de: 'invoke,
@@ -1025,7 +1025,13 @@ impl<'de> Deserializer<'de> {
             // run_starts isolates the lowest set bit in each contiguous group of 1s.
             // Pass (idx + SIMDINPUT_LENGTH) so flatten_bits's internal wrapping_sub(64) yields idx.
             let run_starts = whitespace & !(whitespace.wrapping_shl(1));
-            unsafe { S::flatten_bits(whitespace_indexes, (idx + SIMDINPUT_LENGTH) as u32, run_starts) };
+            unsafe {
+                S::flatten_bits(
+                    whitespace_indexes,
+                    (idx + SIMDINPUT_LENGTH) as u32,
+                    run_starts,
+                )
+            };
 
             // fixup structurals to reflect quotes and add pseudo-structural characters
             structurals = S::finalize_structurals(
@@ -1077,7 +1083,13 @@ impl<'de> Deserializer<'de> {
             // run_starts isolates the lowest set bit in each contiguous group of 1s.
             // Pass (idx + SIMDINPUT_LENGTH) so flatten_bits's internal wrapping_sub(64) yields idx.
             let run_starts = whitespace & !(whitespace.wrapping_shl(1));
-            unsafe { S::flatten_bits(whitespace_indexes, (idx + SIMDINPUT_LENGTH) as u32, run_starts) };
+            unsafe {
+                S::flatten_bits(
+                    whitespace_indexes,
+                    (idx + SIMDINPUT_LENGTH) as u32,
+                    run_starts,
+                )
+            };
 
             // fixup structurals to reflect quotes and add pseudo-structural characters
             structurals = S::finalize_structurals(
