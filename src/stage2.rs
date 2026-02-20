@@ -45,14 +45,31 @@ impl<'de> Deserializer<'de> {
         let res_ptr = res.as_mut_ptr();
         let stack_ptr = stack.as_mut_ptr();
 
+        // Current nesting level of arrays/objects.
+        // Example: parsing the equivalent of {"a":[1]} in TOON goes depth 0 -> 1 (object) -> 2 (array).
         let mut depth: usize = 0;
-        let mut last_start: usize;
+        // Tape slot where the current container (Node::Object / Node::Array) started.
+        // Example: if '{' starts at tape index 7, last_start = 7 until the matching '}'.
+        let mut last_start;
+        // Number of entries seen in the current container.
+        // Example: for array[3]: 10,20,30 cnt becomes 3.
         let mut cnt: usize;
-        let mut r_i: usize = 0;
+        // Write cursor into `res` (the tape under construction).
+        // Example: after writing three nodes, r_i == 3.
+        let mut r_i = 0;
+
+        // Byte offset in the input buffer for the current structural token.
+        // Example: in name: Hamza idx can point to 'n' ':' 'H' ('n' and 'H' because they are the first character of the token)
         let mut idx: usize = 0;
+        // Structural byte currently being handled (read from input2[idx]).
+        // Example: c == b'{' when entering an object, c == b',' between values.
         let mut c: u8 = 0;
+        // Cursor into `structural_indexes`.
+        // Example: i == 5 means the next update_char!() reads structural_indexes[5].
         let mut i: usize = 0;
-        let mut state: State;
+        // Current state of the stage-2 state machine.
+        // Example: State::ObjectKey means the parser currently expects an object key.
+        let mut state;
 
         macro_rules! s2try {
             ($e:expr_2021) => {
@@ -79,6 +96,7 @@ impl<'de> Deserializer<'de> {
                 }
             };
         }
+
         macro_rules! success {
             () => {
                 unsafe {
@@ -87,6 +105,7 @@ impl<'de> Deserializer<'de> {
                 return Ok(());
             };
         }
+
         macro_rules! update_char {
             () => {
                 if i < structural_indexes.len() {
@@ -127,6 +146,37 @@ impl<'de> Deserializer<'de> {
                     $end
                 ))));
             };
+        }
+
+        macro_rules! get_str_end {
+            ($start:expr) => {{
+                // Find the hard boundary
+                let mut end = if c == b':' {
+                    idx
+                } else {
+                    if i < structural_indexes.len() {
+                        let next = *get!(structural_indexes, i) as usize;
+                        if *get!(input2, next) != b'\n' {
+                            fail!(ErrorType::NoStructure);
+                        }
+                        next
+                    } else {
+                        input.len()
+                    }
+                };
+
+                // Fast Right-to-Left Trim
+                while end > $start {
+                    let prev_char = *get!(input2, end - 1);
+                    if prev_char == b' ' {
+                        end -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                end
+            }};
         }
 
         macro_rules! fail {
@@ -194,8 +244,6 @@ impl<'de> Deserializer<'de> {
                 State::ObjectKey => {
                     update_char!();
 
-                    println!("chat is: {}", c as char);
-
                     if c == b'\n' || c == b':' {
                         fail!(ErrorType::ExpectedObjectKey);
                     }
@@ -211,7 +259,8 @@ impl<'de> Deserializer<'de> {
                     }
 
                     cnt += 1;
-                    insert_str!(key_start, idx);
+                    let key_end = get_str_end!(key_start);
+                    insert_str!(key_start, key_end);
 
                     update_char!();
 
@@ -259,15 +308,7 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let value_start = idx;
-                    let value_end = if i < structural_indexes.len() {
-                        let next = *get!(structural_indexes, i) as usize;
-                        if *get!(input2, next) != b'\n' {
-                            fail!(ErrorType::NoStructure);
-                        }
-                        next
-                    } else {
-                        input.len()
-                    };
+                    let value_end = get_str_end!(value_start);
 
                     let value_bytes = &input2[value_start..value_end];
                     let basic_type =
@@ -298,6 +339,7 @@ impl<'de> Deserializer<'de> {
                     if *get!(input2, newline_idx) != b'\n' {
                         fail!(ErrorType::NoStructure);
                     }
+
                     i += 1;
 
                     if i >= structural_indexes.len() {

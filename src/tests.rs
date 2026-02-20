@@ -96,12 +96,11 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from("a:\n  b:\n");
+    let mut d = String::from("name           :Hamza         \nage         :          21");
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
 }
-
 
 #[test]
 fn test_tape_object_escaped() {
