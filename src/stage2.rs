@@ -22,14 +22,25 @@ enum State {
     ParseTabularArray(usize),
     // Block Array: key[N]:\n  - item
     ParseBlockArray(usize),
+    ParseBlockArrayItem,
 
     CheckIndentation(usize),
 }
 #[derive(Debug)]
 pub(crate) enum StackState {
     Start,
-    Object { last_start: usize, cnt: usize },
-    Array { last_start: usize, cnt: usize },
+    Object {
+        last_start: usize,
+        cnt: usize,
+    },
+    Array {
+        parent_last_start: usize,
+        parent_cnt: usize,
+        tape_start: usize,
+        declared_len: usize,
+        elem_cnt: usize,
+    },
+    ArrayItem,
 }
 
 impl<'de> Deserializer<'de> {
@@ -356,7 +367,163 @@ impl<'de> Deserializer<'de> {
                     }
                 }
 
-                State::ParseBlockArray(_declared_len) => {}
+                State::ParseBlockArray(declared_len) => {
+                    update_char!();
+                    if c != b'\n' {
+                        fail!(ErrorType::Syntax);
+                    }
+
+                    let array_tape_start = r_i;
+                    insert_res!(Node::Array {
+                        len: declared_len,
+                        count: 0,
+                    });
+
+                    unsafe {
+                        stack_ptr.add(depth).write(StackState::Array {
+                            parent_last_start: last_start,
+                            parent_cnt: cnt,
+                            tape_start: array_tape_start,
+                            declared_len,
+                            elem_cnt: 0,
+                        });
+                    }
+                    depth += 1;
+
+                    goto!(State::ParseBlockArrayItem);
+                }
+
+                State::ParseBlockArrayItem => {
+                    if i >= structural_indexes.len() {
+                        fail!(ErrorType::ExpectedArrayContent);
+                    }
+
+                    update_char!();
+                    if c != b'-' {
+                        fail!(ErrorType::InvalidListMarker);
+                    }
+
+                    if i >= structural_indexes.len() {
+                        fail!(ErrorType::ExpectedArrayContent);
+                    }
+
+                    update_char!();
+                    let value_start = idx;
+
+                    let is_object_item = if i < structural_indexes.len() {
+                        let next_idx = *get!(structural_indexes, i) as usize;
+                        let next_c = *get!(input2, next_idx);
+                        next_c == b':' || next_c == b'['
+                    } else {
+                        false
+                    };
+
+                    if is_object_item {
+                        // Rewind so ObjectKey can consume the first key token naturally.
+                        i -= 1;
+                        unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
+                        last_start = r_i;
+                        insert_res!(Node::Object { len: 0, count: 0 });
+                        depth += 1;
+                        cnt = 0;
+                        goto!(State::ObjectKey);
+                    }
+
+                    let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
+                    parse_and_insert_value!(value_start, value_end);
+
+                    let (parent_last_start, parent_cnt, tape_start, declared_len, mut elem_cnt) = unsafe {
+                        match *stack_ptr.add(depth - 1) {
+                            StackState::Array {
+                                parent_last_start,
+                                parent_cnt,
+                                tape_start,
+                                declared_len,
+                                elem_cnt,
+                            } => (
+                                parent_last_start,
+                                parent_cnt,
+                                tape_start,
+                                declared_len,
+                                elem_cnt,
+                            ),
+                            _ => {
+                                fail!(ErrorType::NoStructure);
+                            }
+                        }
+                    };
+
+                    elem_cnt += 1;
+                    unsafe {
+                        stack_ptr.add(depth - 1).write(StackState::Array {
+                            parent_last_start,
+                            parent_cnt,
+                            tape_start,
+                            declared_len,
+                            elem_cnt,
+                        });
+                    }
+
+                    if elem_cnt > declared_len {
+                        fail!(ErrorType::ArrayCountMismatch);
+                    }
+
+                    if elem_cnt == declared_len {
+                        unsafe {
+                            match *res_ptr.add(tape_start) {
+                                Node::Array { ref mut count, .. } => {
+                                    *count = r_i - tape_start - 1;
+                                }
+                                _ => unreachable!("array backfill expects Array node"),
+                            }
+                        }
+
+                        depth -= 1;
+                        last_start = parent_last_start;
+                        cnt = parent_cnt;
+
+                        if i >= structural_indexes.len() {
+                            goto!(State::ScopeEnd);
+                        }
+
+                        let newline_idx = *get!(structural_indexes, i) as usize;
+                        goto!(State::CheckIndentation(newline_idx));
+                    }
+
+                    if i >= structural_indexes.len() {
+                        fail!(ErrorType::ArrayCountMismatch);
+                    }
+
+                    update_char!();
+                    if c != b'\n' {
+                        fail!(ErrorType::Syntax);
+                    }
+                    let newline_idx = idx;
+
+                    if i >= structural_indexes.len() {
+                        fail!(ErrorType::ArrayCountMismatch);
+                    }
+
+                    let next_idx = *get!(structural_indexes, i) as usize;
+                    let next_c = *get!(input2, next_idx);
+                    if next_c == b'\n' {
+                        fail!(ErrorType::BlankLineInBlock);
+                    }
+
+                    let actual_ws = next_idx - newline_idx - 1;
+                    let marker_ws = (depth - 1) * 2;
+                    if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
+                        fail!(ErrorType::ArrayCountMismatch);
+                    }
+                    if actual_ws != marker_ws {
+                        fail!(ErrorType::InvalidIndentation);
+                    }
+                    if next_c != b'-' {
+                        fail!(ErrorType::InvalidListMarker);
+                    }
+
+                    goto!(State::ParseBlockArrayItem);
+                }
 
                 State::ParseTabularArray(declared_len) => {
                     // Parse field names from {f1,f2,...}
@@ -683,6 +850,102 @@ impl<'de> Deserializer<'de> {
                                     success!();
                                 }
                                 fail!();
+                            }
+                            StackState::ArrayItem => {
+                                let (
+                                    parent_last_start,
+                                    parent_cnt,
+                                    tape_start,
+                                    declared_len,
+                                    mut elem_cnt,
+                                ) = match *stack_ptr.add(depth - 1) {
+                                    StackState::Array {
+                                        parent_last_start,
+                                        parent_cnt,
+                                        tape_start,
+                                        declared_len,
+                                        elem_cnt,
+                                    } => (
+                                        parent_last_start,
+                                        parent_cnt,
+                                        tape_start,
+                                        declared_len,
+                                        elem_cnt,
+                                    ),
+                                    _ => {
+                                        fail!(ErrorType::NoStructure);
+                                    }
+                                };
+
+                                elem_cnt += 1;
+                                unsafe {
+                                    stack_ptr.add(depth - 1).write(StackState::Array {
+                                        parent_last_start,
+                                        parent_cnt,
+                                        tape_start,
+                                        declared_len,
+                                        elem_cnt,
+                                    });
+                                }
+
+                                if elem_cnt > declared_len {
+                                    fail!(ErrorType::ArrayCountMismatch);
+                                }
+
+                                if elem_cnt < declared_len {
+                                    if i >= structural_indexes.len() {
+                                        fail!(ErrorType::ArrayCountMismatch);
+                                    }
+
+                                    let next_idx = *get!(structural_indexes, i) as usize;
+                                    let next_c = *get!(input2, next_idx);
+                                    if next_c == b'\n' {
+                                        fail!(ErrorType::BlankLineInBlock);
+                                    }
+
+                                    if i == 0 {
+                                        fail!(ErrorType::Syntax);
+                                    }
+                                    let newline_idx = *get!(structural_indexes, i - 1) as usize;
+                                    if *get!(input2, newline_idx) != b'\n' {
+                                        fail!(ErrorType::Syntax);
+                                    }
+
+                                    let actual_ws = next_idx - newline_idx - 1;
+                                    let marker_ws = (depth - 1) * 2;
+                                    if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
+                                        fail!(ErrorType::ArrayCountMismatch);
+                                    }
+                                    if actual_ws != marker_ws {
+                                        fail!(ErrorType::InvalidIndentation);
+                                    }
+                                    if next_c != b'-' {
+                                        fail!(ErrorType::InvalidListMarker);
+                                    }
+
+                                    goto!(State::ParseBlockArrayItem);
+                                }
+
+                                unsafe {
+                                    match *res_ptr.add(tape_start) {
+                                        Node::Array { ref mut count, .. } => {
+                                            *count = r_i - tape_start - 1;
+                                        }
+                                        _ => unreachable!("array backfill expects Array node"),
+                                    }
+                                }
+
+                                depth -= 1;
+                                last_start = parent_last_start;
+                                cnt = parent_cnt;
+
+                                if i >= structural_indexes.len() {
+                                    goto!(State::ScopeEnd);
+                                }
+
+                                i -= 1;
+                                let newline_idx = *get!(structural_indexes, i) as usize;
+                                goto!(State::CheckIndentation(newline_idx));
                             }
                             StackState::Array { .. } => {
                                 fail!(ErrorType::NoStructure);

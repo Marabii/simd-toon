@@ -34,17 +34,19 @@ pub(crate) unsafe fn parse_str<'invoke, 'de>(
     idx: usize,
     end: usize,
 ) -> Result<&'de str> {
-    // Route based on the first character
-    if data[idx] == b'"' {
-        // QUOTED STRING:
-        // We hand it off to the original, unmodified SIMD JSON parse_str!
-        // It will use AVX2 to quickly find the closing quote and handle \ escapes.
-        unsafe { parse_str_quotes(input, data, buffer, idx) }
-    } else {
-        // BARE STRING: slice directly from the 'de input pointer, not from the
-        // 'invoke data slice, so the returned &str carries lifetime 'de.
-        let slice = unsafe { std::slice::from_raw_parts(input.input.add(idx), end - idx) };
-        std::str::from_utf8(slice).map_err(|_| Deserializer::error(ErrorType::InvalidUtf8))
+    unsafe {
+        // Route based on the first character
+        if data[idx] == b'"' {
+            // QUOTED STRING:
+            // We hand it off to the original, unmodified SIMD JSON parse_str!
+            // It will use AVX2 to quickly find the closing quote and handle \ escapes.
+            parse_str_quotes(input, data, buffer, idx)
+        } else {
+            // BARE STRING: slice directly from the 'de input pointer, not from the
+            // 'invoke data slice, so the returned &str carries lifetime 'de.
+            let slice = std::slice::from_raw_parts(input.input.add(idx), end - idx);
+            Ok(std::str::from_utf8_unchecked(slice))
+        }
     }
 }
 

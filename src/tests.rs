@@ -42,10 +42,9 @@ fn test_tape_object_simple() {
 #[test]
 fn playground() {
     let mut d = String::from(
-        r#"a:
-  b:
-    c: "Hello\nWorld"
-  d: "{Dadda""#,
+        r#"[2]:
+  - something
+  - something else"#,
     );
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
@@ -263,6 +262,119 @@ fn test_tape_tabular_with_sibling_key() {
             Node::String("Bob"),
             Node::String("ver"),
             Node::Static(StaticNode::U64(2)),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_block_array_mixed_items() {
+    let mut d = String::from("items[3]:\n  - 1\n  - a: 1\n  - text");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 7 },
+            Node::String("items"),
+            Node::Array { len: 3, count: 5 },
+            Node::Static(StaticNode::U64(1)),
+            Node::Object { len: 1, count: 2 },
+            Node::String("a"),
+            Node::Static(StaticNode::U64(1)),
+            Node::String("text"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_block_array_object_items() {
+    let mut d = String::from(
+        "items[2]:\n  - id: 1\n    name: First\n  - id: 2\n    name: Second\n    extra: true",
+    );
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 14 },
+            Node::String("items"),
+            Node::Array { len: 2, count: 12 },
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(1)),
+            Node::String("name"),
+            Node::String("First"),
+            Node::Object { len: 3, count: 6 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(2)),
+            Node::String("name"),
+            Node::String("Second"),
+            Node::String("extra"),
+            Node::Static(StaticNode::Bool(true)),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_block_array_object_first_tabular_field_with_sibling() {
+    let mut d = String::from(
+        "items[1]:\n  - users[2]{id,name}:\n      1,Ada\n      2,Bob\n    status: active",
+    );
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 17 },
+            Node::String("items"),
+            Node::Array { len: 1, count: 15 },
+            Node::Object { len: 2, count: 14 },
+            Node::String("users"),
+            Node::Array { len: 2, count: 10 },
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(1)),
+            Node::String("name"),
+            Node::String("Ada"),
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(2)),
+            Node::String("name"),
+            Node::String("Bob"),
+            Node::String("status"),
+            Node::String("active"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_block_array_object_single_tabular_field() {
+    let mut d = String::from("items[1]:\n  - users[2]{id,name}:\n      1,Ada\n      2,Bob");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 15 },
+            Node::String("items"),
+            Node::Array { len: 1, count: 13 },
+            Node::Object { len: 1, count: 12 },
+            Node::String("users"),
+            Node::Array { len: 2, count: 10 },
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(1)),
+            Node::String("name"),
+            Node::String("Ada"),
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(2)),
+            Node::String("name"),
+            Node::String("Bob"),
         ]
     );
 }
