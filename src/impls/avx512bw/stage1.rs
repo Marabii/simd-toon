@@ -146,7 +146,6 @@ impl Stage1Parse for SimdInput {
 
             // And the low and high nibbles to get correct matches:
             let result = _mm512_and_si512(result_high_4, result_lower_4);
-            print_m512i_binary(result);
 
             *structurals = _mm512_cmp_epi8_mask(
                 _mm512_and_si512(result, structural_shufti_mask),
@@ -159,9 +158,6 @@ impl Stage1Parse for SimdInput {
                 _mm512_set1_epi8(0),
                 _MM_CMPINT_NE, // Not Equal to zero means it's whitespace
             );
-
-            println!("structurals: {:b}", *structurals);
-            println!("whitespace: {:b}", *whitespace);
         }
     }
 
