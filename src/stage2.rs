@@ -183,8 +183,13 @@ impl<'de> Deserializer<'de> {
         macro_rules! trim_trailing_spaces {
             ($start:expr, $hard_end:expr) => {{
                 let mut end = $hard_end;
-                while end > $start && *get!(input2, end - 1) == b' ' {
-                    end -= 1;
+                while end > $start {
+                    let prev_char = *get!(input2, end - 1);
+                    if prev_char == b' ' || prev_char == b'\r' || prev_char == b'\t' {
+                        end -= 1;
+                    } else {
+                        break;
+                    }
                 }
                 end
             }};

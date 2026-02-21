@@ -41,7 +41,12 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from("items[2]{sku,qty,price}:\n  A1,2,9.99\n  B2,1,14.5\n");
+    let mut d = String::from(
+        r#"a:
+  b:
+    c: "Hello\nWorld"
+  d: "{Dadda""#,
+    );
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
@@ -145,7 +150,7 @@ fn test_tape_complex_object_array() {
     // The input string with your specific formatting
     let mut d = String::from("items[2]{sku,qty,price}:\n  A1,2,9.99\n  B2,1,14.5\n");
     let d = unsafe { d.as_bytes_mut() };
-    
+
     let simd = Deserializer::from_slice(d).expect("failed to parse");
 
     // Comparing against your provided Node tape
