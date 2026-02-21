@@ -41,7 +41,7 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from("tags[3]:                   a,b,c");
+    let mut d = String::from("items[2]{sku,qty,price}:\n  A1,2,9.99\n  B2,1,14.5\n");
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
@@ -136,6 +136,41 @@ fn test_tape_array_with_sibling_key() {
             Node::String("simd"),
             Node::String("ver"),
             Node::Static(StaticNode::U64(1)),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_complex_object_array() {
+    // The input string with your specific formatting
+    let mut d = String::from("items[2]{sku,qty,price}:\n  A1,2,9.99\n  B2,1,14.5\n");
+    let d = unsafe { d.as_bytes_mut() };
+    
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    // Comparing against your provided Node tape
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 16 },
+            Node::String("items"),
+            Node::Array { len: 2, count: 14 },
+            // First item in the array
+            Node::Object { len: 3, count: 6 },
+            Node::String("sku"),
+            Node::String("A1"),
+            Node::String("qty"),
+            Node::Static(StaticNode::U64(2)),
+            Node::String("price"),
+            Node::Static(StaticNode::F64(9.99)),
+            // Second item in the array
+            Node::Object { len: 3, count: 6 },
+            Node::String("sku"),
+            Node::String("B2"),
+            Node::String("qty"),
+            Node::Static(StaticNode::U64(1)),
+            Node::String("price"),
+            Node::Static(StaticNode::F64(14.5)),
         ]
     );
 }

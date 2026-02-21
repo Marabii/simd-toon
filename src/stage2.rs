@@ -12,6 +12,18 @@ macro_rules! get {
 enum State {
     ObjectKey,
     ScopeEnd,
+    SingleValue,
+
+    ArrayRouter(usize),
+
+    // tags[3]: a,b,c
+    ParseInlineArray(usize),
+    // key[N]{f1,f2,...}:\n rows
+    ParseTabularArray(usize),
+    // Block Array: key[N]:\n  - item
+    ParseBlockArray(usize),
+
+    CheckIndentation(usize),
 }
 #[derive(Debug)]
 pub(crate) enum StackState {
@@ -148,34 +160,32 @@ impl<'de> Deserializer<'de> {
             };
         }
 
-        macro_rules! get_value_end {
-            ($start:expr, $delim:expr) => {{
+        macro_rules! peek_value_end {
+            ($start:expr, $err:expr, $($expected_delim:expr),+) => {{
                 // Find the hard boundary
-                let mut end = if c == b':' {
-                    idx
-                } else {
-                    if i < structural_indexes.len() {
-                        let next = *get!(structural_indexes, i) as usize;
-                        let next_c = *get!(input2, next);
-                        if next_c != b'\n' && next_c != $delim {
-                            fail!(ErrorType::NoStructure);
-                        }
-                        next
-                    } else {
-                        input.len()
+                let hard_end = if i < structural_indexes.len() {
+                    let next = *get!(structural_indexes, i) as usize;
+                    let next_c = *get!(input2, next);
+
+                    // If the next character doesn't match ANY of the expected delimiters, fail!
+                    if $(next_c != $expected_delim)&&+ {
+                        fail!($err);
                     }
+                    next
+                } else {
+                    input.len() // EOF
                 };
 
-                // Right-to-Left Trim
-                while end > $start {
-                    let prev_char = *get!(input2, end - 1);
-                    if prev_char == b' ' {
-                        end -= 1;
-                    } else {
-                        break;
-                    }
-                }
+                trim_trailing_spaces!($start, hard_end)
+            }};
+        }
 
+        macro_rules! trim_trailing_spaces {
+            ($start:expr, $hard_end:expr) => {{
+                let mut end = $hard_end;
+                while end > $start && *get!(input2, end - 1) == b' ' {
+                    end -= 1;
+                }
                 end
             }};
         }
@@ -264,24 +274,23 @@ impl<'de> Deserializer<'de> {
                 State::ObjectKey => {
                     update_char!();
 
-                    if c == b'\n' || c == b':' {
+                    if c == b'\n' || c == b':' || c == b'[' {
                         fail!(ErrorType::ExpectedObjectKey);
-                    }
-                    if c == b'[' {
-                        fail!(ErrorType::NoStructure);
                     }
 
                     let key_start = idx;
-
                     update_char!();
-                    if c == b'[' {
-                        // Array key: key[N]: val1,val2,...  or  key[N]{f1,f2,...}:\n rows
 
-                        // key_end = position of '[' (trim trailing spaces)
-                        let mut key_end = idx;
-                        while key_end > key_start && *get!(input2, key_end - 1) == b' ' {
-                            key_end -= 1;
-                        }
+                    if c == b':' {
+                        // Standard Key 'name: Hamza'
+                        cnt += 1;
+                        let key_end = trim_trailing_spaces!(key_start, idx);
+                        insert_str!(key_start, key_end);
+
+                        goto!(State::SingleValue);
+                    } else if c == b'[' {
+                        // Array key: key[N]: val1,val2,...
+                        let key_end = trim_trailing_spaces!(key_start, idx);
 
                         // Parse [N]
                         update_char!();
@@ -294,333 +303,262 @@ impl<'de> Deserializer<'de> {
                         let declared_len =
                             s2try!(Self::parse_array_len(input2, digit_start, digit_end));
 
-                        // After ']': could be '{' (tabular) or ':' (inline/block)
+                        // After ']': expect '{' (tabular) or ':' (inline/block)
                         update_char!();
                         cnt += 1;
                         insert_str!(key_start, key_end);
 
-                        if c == b'{' {
-                            // Tabular array: key[N]{f1,f2,...}:\n  row\n  row
+                        goto!(State::ArrayRouter(declared_len));
+                    } else {
+                        fail!(ErrorType::Syntax);
+                    }
+                }
 
-                            // Parse field names from {f1,f2,...}
-                            let mut fields: Vec<(usize, usize)> = Vec::new();
-                            loop {
-                                update_char!();
-                                if c == b'}' {
-                                    break;
-                                }
-                                let field_start = idx;
-                                let field_end = if i < structural_indexes.len() {
-                                    let next = *get!(structural_indexes, i) as usize;
-                                    let next_c = *get!(input2, next);
-                                    if next_c != b',' && next_c != b'}' {
-                                        fail!(ErrorType::InvalidArrayHeader);
-                                    }
-                                    let mut fe = next;
-                                    while fe > field_start && *get!(input2, fe - 1) == b' ' {
-                                        fe -= 1;
-                                    }
-                                    fe
-                                } else {
-                                    fail!(ErrorType::InvalidArrayHeader);
-                                };
-                                fields.push((field_start, field_end));
-                                // Consume ',' or '}'
-                                update_char!();
-                                if c == b'}' {
-                                    break;
-                                }
-                                // else c == b',' → continue
+                State::ArrayRouter(declared_len) => {
+                    if c == b'{' {
+                        goto!(State::ParseTabularArray(declared_len));
+                    } else if c == b':' {
+                        if declared_len == 0 {
+                            insert_res!(Node::Array { len: 0, count: 0 });
+
+                            if i >= structural_indexes.len() {
+                                goto!(State::ScopeEnd);
                             }
 
-                            // Expect ':'
-                            update_char!();
-                            if c != b':' {
-                                fail!(ErrorType::InvalidArrayHeader);
-                            }
-
-                            let num_fields = fields.len();
-
-                            // Empty tabular array
-                            if declared_len == 0 {
-                                insert_res!(Node::Array { len: 0, count: 0 });
-                                if i < structural_indexes.len() {
-                                    update_char!();
-                                    if c != b'\n' {
-                                        fail!(ErrorType::Syntax);
-                                    }
-                                } else {
-                                    goto!(State::ScopeEnd);
-                                }
-                                let newline_idx = idx;
-                                if i >= structural_indexes.len() {
-                                    goto!(State::ScopeEnd);
-                                }
-                                let next_idx = *get!(structural_indexes, i) as usize;
-                                let next_c = *get!(input2, next_idx);
-                                if next_c == b'\n' {
-                                    fail!(ErrorType::Syntax);
-                                }
-                                let actual_ws = next_idx - newline_idx - 1;
-                                let sibling_ws = (depth - 1) * 2;
-                                if actual_ws == sibling_ws {
-                                    goto!(State::ObjectKey);
-                                }
-                                if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                                    goto!(State::ScopeEnd);
-                                }
-                                fail!(ErrorType::InvalidIndentation);
-                            }
-
-                            // Expect '\n' before rows
                             update_char!();
                             if c != b'\n' {
                                 fail!(ErrorType::Syntax);
                             }
 
-                            let array_tape_start = r_i;
-                            insert_res!(Node::Array {
-                                len: declared_len,
-                                count: 0,
-                            });
-
-                            for _row_idx in 0..declared_len {
-                                // First byte of this row (pseudo-structural after indentation)
-                                update_char!();
-
-                                let row_tape_start = r_i;
-                                insert_res!(Node::Object {
-                                    len: num_fields,
-                                    count: 0,
-                                });
-
-                                for (fi, &(fname_start, fname_end)) in fields.iter().enumerate() {
-                                    // Emit field name
-                                    insert_str!(fname_start, fname_end);
-
-                                    let value_start = idx;
-                                    // Find value end (next structural: ',' '\n' or EOF)
-                                    let value_end = if i < structural_indexes.len() {
-                                        let next = *get!(structural_indexes, i) as usize;
-                                        let mut ve = next;
-                                        while ve > value_start && *get!(input2, ve - 1) == b' ' {
-                                            ve -= 1;
-                                        }
-                                        ve
-                                    } else {
-                                        let mut ve = input.len();
-                                        while ve > value_start && *get!(input2, ve - 1) == b' ' {
-                                            ve -= 1;
-                                        }
-                                        ve
-                                    };
-
-                                    // Classify & emit value
-                                    parse_and_insert_value!(value_start, value_end);
-
-                                    if fi < num_fields - 1 {
-                                        // Consume ',' then advance to next value start
-                                        update_char!();
-                                        if c != b',' {
-                                            fail!(ErrorType::Syntax);
-                                        }
-                                        update_char!();
-                                    } else {
-                                        // Last field: consume trailing '\n' if present
-                                        if i < structural_indexes.len() {
-                                            update_char!();
-                                            if c != b'\n' {
-                                                fail!(ErrorType::Syntax);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Backfill row Object count
-                                unsafe {
-                                    match *res_ptr.add(row_tape_start) {
-                                        Node::Object { ref mut count, .. } => {
-                                            *count = r_i - row_tape_start - 1;
-                                        }
-                                        _ => {
-                                            unreachable!("tabular row backfill expects Object node")
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Backfill Array count
-                            unsafe {
-                                match *res_ptr.add(array_tape_start) {
-                                    Node::Array { ref mut count, .. } => {
-                                        *count = r_i - array_tape_start - 1;
-                                    }
-                                    _ => unreachable!("array backfill expects Array node"),
-                                }
-                            }
-
-                            // Scope continuation (idx = last '\n' consumed, or last value if EOF)
-                            if i >= structural_indexes.len() {
-                                goto!(State::ScopeEnd);
-                            }
-                            let newline_idx = idx;
-                            let next_idx = *get!(structural_indexes, i) as usize;
-                            let next_c = *get!(input2, next_idx);
-                            if next_c == b'\n' {
-                                fail!(ErrorType::Syntax);
-                            }
-                            let actual_ws = next_idx - newline_idx - 1;
-                            let sibling_ws = (depth - 1) * 2;
-                            if actual_ws == sibling_ws {
-                                goto!(State::ObjectKey);
-                            }
-                            if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                                goto!(State::ScopeEnd);
-                            }
-                            fail!(ErrorType::InvalidIndentation);
+                            // update_char! consumed the newline. Back up!
+                            i -= 1;
+                            goto!(State::CheckIndentation(idx));
                         } else {
-                            // Non-tabular: c must be ':'
-                            if c != b':' {
-                                fail!(ErrorType::InvalidArrayHeader);
-                            }
-
-                            // Empty array: emit immediately
-                            if declared_len == 0 {
-                                insert_res!(Node::Array { len: 0, count: 0 });
-                                if i >= structural_indexes.len() {
-                                    goto!(State::ScopeEnd);
-                                }
-                                update_char!();
-                                if c != b'\n' {
-                                    fail!(ErrorType::Syntax);
-                                }
-                                let newline_idx = idx;
-                                if i >= structural_indexes.len() {
-                                    goto!(State::ScopeEnd);
-                                }
-                                let next_idx = *get!(structural_indexes, i) as usize;
-                                let next_c = *get!(input2, next_idx);
-                                if next_c == b'\n' {
-                                    fail!(ErrorType::Syntax);
-                                }
-                                let actual_ws = next_idx - newline_idx - 1;
-                                let sibling_ws = (depth - 1) * 2;
-                                if actual_ws == sibling_ws {
-                                    goto!(State::ObjectKey);
-                                }
-                                if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                                    goto!(State::ScopeEnd);
-                                }
-                                fail!(ErrorType::InvalidIndentation);
-                            }
-
-                            // Peek ahead to distinguish inline from block
                             if i >= structural_indexes.len() {
                                 fail!(ErrorType::ExpectedArrayContent);
                             }
-                            let peek_c = *get!(input2, *get!(structural_indexes, i) as usize);
-                            if peek_c == b'\n' {
-                                // Block arrays not yet implemented
-                                fail!(ErrorType::NoStructure);
-                            }
-
-                            // Inline array: comma-separated values on this line
-                            let array_tape_start = r_i;
-                            insert_res!(Node::Array {
-                                len: declared_len,
-                                count: 0,
-                            });
-
-                            let mut elem_count: usize = 0;
-                            loop {
-                                update_char!();
-                                let value_start = idx;
-                                let value_end = get_value_end!(value_start, b',');
-
-                                parse_and_insert_value!(value_start, value_end);
-                                elem_count += 1;
-
-                                // EOF with no trailing newline — array ends here
-                                if i >= structural_indexes.len() {
-                                    break;
-                                }
-                                update_char!();
-                                if c == b',' {
-                                    // continue to next element
-                                } else if c == b'\n' {
-                                    break;
-                                } else {
-                                    fail!(ErrorType::Syntax);
-                                }
-                            }
-
-                            // Backfill Array count
-                            unsafe {
-                                match *res_ptr.add(array_tape_start) {
-                                    Node::Array { ref mut count, .. } => {
-                                        *count = r_i - array_tape_start - 1;
-                                    }
-                                    _ => unreachable!("array backfill expects an array node"),
-                                }
-                            }
-
-                            if elem_count != declared_len {
-                                fail!(ErrorType::ArrayCountMismatch);
-                            }
-
-                            // Scope continuation — idx now holds the '\n' position
-                            let newline_idx = idx;
-                            if i >= structural_indexes.len() {
-                                goto!(State::ScopeEnd);
-                            }
                             let next_idx = *get!(structural_indexes, i) as usize;
                             let next_c = *get!(input2, next_idx);
+
                             if next_c == b'\n' {
-                                fail!(ErrorType::Syntax);
+                                goto!(State::ParseBlockArray(declared_len));
+                            } else {
+                                goto!(State::ParseInlineArray(declared_len));
                             }
-                            let actual_ws = next_idx - newline_idx - 1;
-                            let sibling_ws = (depth - 1) * 2;
-                            if actual_ws == sibling_ws {
-                                goto!(State::ObjectKey);
-                            }
-                            if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                                goto!(State::ScopeEnd);
-                            }
-                            fail!(ErrorType::InvalidIndentation);
                         }
-                    } else if c != b':' {
-                        fail!(ErrorType::ExpectedObjectColon);
+                    } else {
+                        fail!(ErrorType::InvalidArrayHeader);
+                    }
+                }
+
+                State::ParseBlockArray(_declared_len) => {}
+
+                State::ParseTabularArray(declared_len) => {
+                    // Parse field names from {f1,f2,...}
+                    let mut fields: Vec<(usize, usize)> = Vec::new();
+                    loop {
+                        update_char!();
+                        if c == b'}' {
+                            break;
+                        }
+
+                        let field_start = idx;
+                        // A field must end with a comma or a closing brace
+                        let field_end =
+                            peek_value_end!(field_start, ErrorType::InvalidArrayHeader, b',', b'}');
+                        fields.push((field_start, field_end));
+
+                        // Consume the ',' or '}' we just peeked at
+                        update_char!();
+                        if c == b'}' {
+                            break;
+                        }
+                        // else c == b',' → continue
                     }
 
-                    cnt += 1;
-                    let key_end = get_value_end!(key_start, b'\n');
-                    insert_str!(key_start, key_end);
+                    // Expect ':'
+                    update_char!();
+                    if c != b':' {
+                        fail!(ErrorType::InvalidArrayHeader);
+                    }
 
+                    let num_fields = fields.len();
+
+                    // Empty tabular array
+                    if declared_len == 0 {
+                        insert_res!(Node::Array { len: 0, count: 0 });
+                        if i >= structural_indexes.len() {
+                            goto!(State::ScopeEnd);
+                        }
+
+                        // Expect '\n' after the tabular header's ':'
+                        update_char!();
+                        if c != b'\n' {
+                            fail!(ErrorType::Syntax);
+                        }
+
+                        // update_char! consumed the newline. Back up!
+                        i -= 1;
+                        goto!(State::CheckIndentation(idx));
+                    }
+
+                    // Expect '\n' before rows
+                    update_char!();
+                    if c != b'\n' {
+                        fail!(ErrorType::Syntax);
+                    }
+
+                    let array_tape_start = r_i;
+                    insert_res!(Node::Array {
+                        len: declared_len,
+                        count: 0
+                    });
+
+                    for _row_idx in 0..declared_len {
+                        update_char!();
+
+                        let row_tape_start = r_i;
+                        insert_res!(Node::Object {
+                            len: num_fields,
+                            count: 0
+                        });
+
+                        for (fi, &(fname_start, fname_end)) in fields.iter().enumerate() {
+                            // Emit field name
+                            insert_str!(fname_start, fname_end);
+
+                            let value_start = idx;
+                            // A tabular value must end with a comma, or a newline (end of row)
+                            let value_end =
+                                peek_value_end!(value_start, ErrorType::Syntax, b',', b'\n');
+
+                            parse_and_insert_value!(value_start, value_end);
+
+                            if fi < num_fields - 1 {
+                                // Consume ',' then advance to next value start
+                                update_char!();
+                                if c != b',' {
+                                    fail!(ErrorType::Syntax);
+                                }
+                                update_char!();
+                            } else {
+                                // Last field: consume trailing '\n' if present
+                                if i < structural_indexes.len() {
+                                    update_char!();
+                                    if c != b'\n' {
+                                        fail!(ErrorType::Syntax);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Backfill row Object count
+                        unsafe {
+                            match *res_ptr.add(row_tape_start) {
+                                Node::Object { ref mut count, .. } => {
+                                    *count = r_i - row_tape_start - 1;
+                                }
+                                _ => unreachable!("tabular row backfill expects Object node"),
+                            }
+                        }
+                    }
+
+                    // Backfill Array count
+                    unsafe {
+                        match *res_ptr.add(array_tape_start) {
+                            Node::Array { ref mut count, .. } => {
+                                *count = r_i - array_tape_start - 1;
+                            }
+                            _ => unreachable!("array backfill expects Array node"),
+                        }
+                    }
+
+                    // Scope continuation
+                    if i >= structural_indexes.len() {
+                        goto!(State::ScopeEnd);
+                    }
+
+                    // The inner loop consumed the final '\n' of the last row. Back up!
+                    i -= 1;
+                    let newline_idx = *get!(structural_indexes, i) as usize;
+                    goto!(State::CheckIndentation(newline_idx));
+                }
+
+                State::ParseInlineArray(declared_len) => {
+                    let array_tape_start = r_i;
+                    insert_res!(Node::Array {
+                        len: declared_len,
+                        count: 0,
+                    });
+
+                    let mut elem_count: usize = 0;
+                    loop {
+                        update_char!();
+                        let value_start = idx;
+                        let value_end =
+                            peek_value_end!(value_start, ErrorType::Syntax, b',', b'\n');
+
+                        parse_and_insert_value!(value_start, value_end);
+                        elem_count += 1;
+
+                        if i >= structural_indexes.len() {
+                            break;
+                        }
+                        update_char!();
+                        if c == b',' {
+                            // continue
+                        } else if c == b'\n' {
+                            // We consumed the newline. Back up!
+                            i -= 1;
+                            break;
+                        } else {
+                            fail!(ErrorType::Syntax);
+                        }
+                    }
+
+                    // Backfill Array count
+                    unsafe {
+                        match *res_ptr.add(array_tape_start) {
+                            Node::Array { ref mut count, .. } => {
+                                *count = r_i - array_tape_start - 1;
+                            }
+                            _ => unreachable!("array backfill expects an array node"),
+                        }
+                    }
+
+                    if elem_count != declared_len {
+                        fail!(ErrorType::ArrayCountMismatch);
+                    }
+                    if i >= structural_indexes.len() {
+                        goto!(State::ScopeEnd);
+                    }
+
+                    let newline_idx = *get!(structural_indexes, i) as usize;
+                    goto!(State::CheckIndentation(newline_idx));
+                }
+
+                State::SingleValue => {
                     update_char!();
 
                     if c == b'\n' {
+                        // nested object or null
                         let newline_idx = idx;
+
                         if i >= structural_indexes.len() {
                             insert_res!(Node::Static(StaticNode::Null));
                             goto!(State::ScopeEnd);
                         }
 
                         let next_idx = *get!(structural_indexes, i) as usize;
-                        let next_c = *get!(input2, next_idx);
-                        if next_c == b'\n' {
+                        if *get!(input2, next_idx) == b'\n' {
                             fail!(ErrorType::Syntax);
                         }
 
                         let actual_ws = next_idx - newline_idx - 1;
-                        let sibling_ws = (depth - 1) * 2;
                         let child_ws = depth * 2;
 
-                        if actual_ws == sibling_ws {
-                            insert_res!(Node::Static(StaticNode::Null));
-                            goto!(State::ObjectKey);
-                        }
-
                         if actual_ws == child_ws {
+                            // Push scope
                             unsafe {
                                 stack_ptr
                                     .add(depth)
@@ -631,39 +569,48 @@ impl<'de> Deserializer<'de> {
                             depth += 1;
                             cnt = 0;
                             goto!(State::ObjectKey);
-                        }
-
-                        if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
+                        } else {
+                            // It wasn't a child object, just a null value
                             insert_res!(Node::Static(StaticNode::Null));
+
+                            // pushed `i` past the newline. Back up!
+                            i -= 1;
+                            goto!(State::CheckIndentation(newline_idx));
+                        }
+                    } else {
+                        // Primitive value
+                        let value_start = idx;
+                        let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
+
+                        parse_and_insert_value!(value_start, value_end);
+
+                        if i >= structural_indexes.len() {
                             goto!(State::ScopeEnd);
                         }
 
-                        fail!(ErrorType::InvalidIndentation);
+                        // Here, get_value_end! only peeked, so `i` is correctly pointing at the newline.
+                        let newline_idx = *get!(structural_indexes, i) as usize;
+                        goto!(State::CheckIndentation(newline_idx));
                     }
+                }
 
-                    let value_start = idx;
-                    let value_end = get_value_end!(value_start, b'\n');
-
-                    parse_and_insert_value!(value_start, value_end);
-
+                State::CheckIndentation(newline_idx) => {
                     if i >= structural_indexes.len() {
                         goto!(State::ScopeEnd);
                     }
 
-                    let newline_idx = *get!(structural_indexes, i) as usize;
                     if *get!(input2, newline_idx) != b'\n' {
                         fail!(ErrorType::NoStructure);
                     }
 
-                    i += 1;
+                    i += 1; // Consume the newline
 
                     if i >= structural_indexes.len() {
                         goto!(State::ScopeEnd);
                     }
 
                     let next_idx = *get!(structural_indexes, i) as usize;
-                    let next_c = *get!(input2, next_idx);
-                    if next_c == b'\n' {
+                    if *get!(input2, next_idx) == b'\n' {
                         fail!(ErrorType::Syntax);
                     }
 
@@ -671,10 +618,10 @@ impl<'de> Deserializer<'de> {
                     let sibling_ws = (depth - 1) * 2;
 
                     if actual_ws == sibling_ws {
-                        goto!(State::ObjectKey);
+                        goto!(State::ObjectKey); // Sibling found, continue current object
                     }
                     if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                        goto!(State::ScopeEnd);
+                        goto!(State::ScopeEnd); // Indentation dropped, close object
                     }
 
                     fail!(ErrorType::InvalidIndentation);
@@ -684,7 +631,6 @@ impl<'de> Deserializer<'de> {
                     if depth == 0 {
                         fail!(ErrorType::Syntax);
                     }
-
                     depth -= 1;
 
                     unsafe {
@@ -710,38 +656,19 @@ impl<'de> Deserializer<'de> {
                                 cnt = c;
 
                                 if i >= structural_indexes.len() {
-                                    goto!(State::ScopeEnd);
+                                    goto!(State::ScopeEnd); // Loop again for EOF
                                 }
 
-                                let next_idx = *get!(structural_indexes, i) as usize;
-                                if *get!(input2, next_idx) == b'\n' {
-                                    fail!(ErrorType::Syntax);
-                                }
-
-                                if i == 0 {
-                                    fail!(ErrorType::Syntax);
-                                }
-
-                                let prev_idx = *get!(structural_indexes, i - 1) as usize;
-                                if *get!(input2, prev_idx) != b'\n' {
-                                    fail!(ErrorType::Syntax);
-                                }
-
-                                let actual_ws = next_idx - prev_idx - 1;
-                                let expected_ws = (depth - 1) * 2;
-
-                                if actual_ws == expected_ws {
-                                    goto!(State::ObjectKey);
-                                }
-                                if actual_ws < expected_ws && actual_ws.is_multiple_of(2) {
-                                    goto!(State::ScopeEnd);
-                                }
-
-                                fail!(ErrorType::InvalidIndentation);
+                                // We dropped into ScopeEnd because CheckIndentation found
+                                // that the indentation dropped. CheckIndentation already
+                                // consumed the newline (i += 1). We need to back up so we
+                                // can re-evaluate that exact same newline against the new depth
+                                i -= 1;
+                                let newline_idx = *get!(structural_indexes, i) as usize;
+                                goto!(State::CheckIndentation(newline_idx));
                             }
-
                             StackState::Start => {
-                                // Skip any trailing `\n` structurals (line terminators).
+                                // Skip any trailing `\n` structurals (EOF terminators).
                                 while i < structural_indexes.len()
                                     && *get!(input2, *get!(structural_indexes, i) as usize) == b'\n'
                                 {
