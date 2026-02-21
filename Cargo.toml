@@ -56,6 +56,10 @@ harness = false
 name = "to_tape"
 harness = false
 
+[[bench]]
+name = "output_toon"
+harness = false
+
 [features]
 default = ["swar-number-parsing", "serde_impl", "runtime-detection"]
 

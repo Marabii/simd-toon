@@ -42,9 +42,8 @@ fn test_tape_object_simple() {
 #[test]
 fn playground() {
     let mut d = String::from(
-        r#"[2]:
-  - something
-  - something else"#,
+        r#"name: "hamza dadda"
+        age: 21"#,
     );
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
@@ -375,6 +374,38 @@ fn test_tape_block_array_object_single_tabular_field() {
             Node::Static(StaticNode::U64(2)),
             Node::String("name"),
             Node::String("Bob"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_root_block_array_strings() {
+    let mut d = String::from("[2]:\n  - something\n  - something else");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Array { len: 2, count: 2 },
+            Node::String("something"),
+            Node::String("something else"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_root_inline_array_strings() {
+    let mut d = String::from("[2]: something, \"something else\"");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Array { len: 2, count: 2 },
+            Node::String("something"),
+            Node::String("something else"),
         ]
     );
 }

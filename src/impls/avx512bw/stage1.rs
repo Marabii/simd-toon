@@ -153,6 +153,8 @@ impl Stage1Parse for SimdInput {
                 _MM_CMPINT_NE, // Not Equal to zero means it's a structural
             );
 
+            print!("{:b}", *structurals);
+
             *whitespace = _mm512_cmp_epi8_mask(
                 _mm512_and_si512(result, whitespace_shufti_mask),
                 _mm512_set1_epi8(0),

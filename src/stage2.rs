@@ -73,10 +73,10 @@ impl<'de> Deserializer<'de> {
         let mut depth: usize = 0;
         // Tape slot where the current container (Node::Object / Node::Array) started.
         // Example: if '{' starts at tape index 7, last_start = 7 until the matching '}'.
-        let mut last_start;
+        let mut last_start: usize = 0;
         // Number of entries seen in the current container.
         // Example: for array[3]: 10,20,30 cnt becomes 3.
-        let mut cnt: usize;
+        let mut cnt: usize = 0;
         // Write cursor into `res` (the tape under construction).
         // Example: after writing three nodes, r_i == 3.
         let mut r_i = 0;
@@ -255,6 +255,20 @@ impl<'de> Deserializer<'de> {
             };
         }
 
+        macro_rules! finish_root_array {
+            () => {{
+                while i < structural_indexes.len() {
+                    let trailing_idx = *get!(structural_indexes, i) as usize;
+                    if *get!(input2, trailing_idx) == b'\n' {
+                        i += 1;
+                    } else {
+                        fail!(ErrorType::Syntax);
+                    }
+                }
+                success!();
+            }};
+        }
+
         if structural_indexes.len() < 2 {
             fail!(ErrorType::NoStructure);
         }
@@ -267,21 +281,38 @@ impl<'de> Deserializer<'de> {
             fail!(ErrorType::ExpectedObjectKey);
         }
 
-        let second_idx = *get!(structural_indexes, 1) as usize;
-        idx = second_idx;
-        c = *get!(input2, second_idx);
+        if c == b'[' {
+            // Root array: [N]: ...
+            i = 1; // consume '['
 
-        match c {
-            b'[' | b':' => {
-                unsafe { stack_ptr.add(depth).write(StackState::Start) };
-                last_start = r_i;
-                insert_res!(Node::Object { len: 0, count: 0 });
-                depth += 1;
-                cnt = 0;
-                state = State::ObjectKey;
+            update_char!();
+            let digit_start = idx;
+            update_char!();
+            if c != b']' {
+                fail!(ErrorType::InvalidArrayHeader);
             }
-            _ => {
-                fail!();
+            let digit_end = idx;
+            let declared_len = s2try!(Self::parse_array_len(input2, digit_start, digit_end));
+
+            update_char!();
+            state = State::ArrayRouter(declared_len);
+        } else {
+            let second_idx = *get!(structural_indexes, 1) as usize;
+            idx = second_idx;
+            c = *get!(input2, second_idx);
+
+            match c {
+                b'[' | b':' => {
+                    unsafe { stack_ptr.add(depth).write(StackState::Start) };
+                    last_start = r_i;
+                    insert_res!(Node::Object { len: 0, count: 0 });
+                    depth += 1;
+                    cnt = 0;
+                    state = State::ObjectKey;
+                }
+                _ => {
+                    fail!();
+                }
             }
         }
 
@@ -338,12 +369,19 @@ impl<'de> Deserializer<'de> {
                             insert_res!(Node::Array { len: 0, count: 0 });
 
                             if i >= structural_indexes.len() {
+                                if depth == 0 {
+                                    success!();
+                                }
                                 goto!(State::ScopeEnd);
                             }
 
                             update_char!();
                             if c != b'\n' {
                                 fail!(ErrorType::Syntax);
+                            }
+
+                            if depth == 0 {
+                                finish_root_array!();
                             }
 
                             // update_char! consumed the newline. Back up!
@@ -429,8 +467,32 @@ impl<'de> Deserializer<'de> {
                         goto!(State::ObjectKey);
                     }
 
-                    let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
+                    // Block-array primitive values are line-based and may contain spaces.
+                    let mut hard_end = value_start;
+                    while hard_end < input.len() && *get!(input2, hard_end) != b'\n' {
+                        hard_end += 1;
+                    }
+                    let value_end = trim_trailing_spaces!(value_start, hard_end);
                     parse_and_insert_value!(value_start, value_end);
+
+                    if hard_end < input.len() {
+                        while i < structural_indexes.len() {
+                            let structural_idx = *get!(structural_indexes, i) as usize;
+                            if structural_idx < hard_end {
+                                i += 1;
+                                continue;
+                            }
+                            if structural_idx == hard_end {
+                                break;
+                            }
+                            fail!(ErrorType::Syntax);
+                        }
+                        if i >= structural_indexes.len() {
+                            fail!(ErrorType::Syntax);
+                        }
+                    } else {
+                        i = structural_indexes.len();
+                    }
 
                     let (parent_last_start, parent_cnt, tape_start, declared_len, mut elem_cnt) = unsafe {
                         match *stack_ptr.add(depth - 1) {
@@ -483,7 +545,14 @@ impl<'de> Deserializer<'de> {
                         cnt = parent_cnt;
 
                         if i >= structural_indexes.len() {
+                            if depth == 0 {
+                                success!();
+                            }
                             goto!(State::ScopeEnd);
+                        }
+
+                        if depth == 0 {
+                            finish_root_array!();
                         }
 
                         let newline_idx = *get!(structural_indexes, i) as usize;
@@ -511,7 +580,7 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let actual_ws = next_idx - newline_idx - 1;
-                    let marker_ws = (depth - 1) * 2;
+                    let marker_ws = if depth == 1 { 2 } else { (depth - 1) * 2 };
                     if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
                         fail!(ErrorType::ArrayCountMismatch);
                     }
@@ -647,7 +716,19 @@ impl<'de> Deserializer<'de> {
 
                     // Scope continuation
                     if i >= structural_indexes.len() {
+                        if depth == 0 {
+                            success!();
+                        }
                         goto!(State::ScopeEnd);
+                    }
+
+                    if depth == 0 {
+                        // Root tabular array: accept only trailing newlines.
+                        if i == 0 {
+                            fail!(ErrorType::Syntax);
+                        }
+                        i -= 1;
+                        finish_root_array!();
                     }
 
                     // The inner loop consumed the final '\n' of the last row. Back up!
@@ -702,7 +783,14 @@ impl<'de> Deserializer<'de> {
                         fail!(ErrorType::ArrayCountMismatch);
                     }
                     if i >= structural_indexes.len() {
+                        if depth == 0 {
+                            success!();
+                        }
                         goto!(State::ScopeEnd);
+                    }
+
+                    if depth == 0 {
+                        finish_root_array!();
                     }
 
                     let newline_idx = *get!(structural_indexes, i) as usize;
@@ -767,6 +855,10 @@ impl<'de> Deserializer<'de> {
                 }
 
                 State::CheckIndentation(newline_idx) => {
+                    if depth == 0 {
+                        fail!(ErrorType::Syntax);
+                    }
+
                     if i >= structural_indexes.len() {
                         goto!(State::ScopeEnd);
                     }
@@ -912,7 +1004,7 @@ impl<'de> Deserializer<'de> {
                                     }
 
                                     let actual_ws = next_idx - newline_idx - 1;
-                                    let marker_ws = (depth - 1) * 2;
+                                    let marker_ws = if depth == 1 { 2 } else { (depth - 1) * 2 };
                                     if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
                                         fail!(ErrorType::ArrayCountMismatch);
                                     }
@@ -940,7 +1032,16 @@ impl<'de> Deserializer<'de> {
                                 cnt = parent_cnt;
 
                                 if i >= structural_indexes.len() {
+                                    if depth == 0 {
+                                        success!();
+                                    }
                                     goto!(State::ScopeEnd);
+                                }
+
+                                if depth == 0 {
+                                    // We just closed the root array.
+                                    i -= 1;
+                                    finish_root_array!();
                                 }
 
                                 i -= 1;
