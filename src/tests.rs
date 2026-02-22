@@ -41,15 +41,67 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from(
-        r#"name: "hamza dadda"
-        age: 21"#,
-    );
+    let mut d = String::from("items[2]{sku,qty,price}:\n  A1,\"Hello world\",9.99\n  B2,1,14.5\n");
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("");
     println!("{:?}", simd.tape);
 }
 
+#[test]
+fn test_multiline_array_with_indented_strings() {
+    let mut d = String::from("users[3]:\n  - Eren Yeager\n  - Mikasa Akarman\n  - Armin Arlert");
+    let d = unsafe { d.as_bytes_mut() };
+
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 5 },
+            Node::String("users"),
+            Node::Array { len: 3, count: 3 },
+            Node::String("Eren Yeager"),
+            Node::String("Mikasa Akarman"),
+            Node::String("Armin Arlert"),
+        ]
+    );
+}
+
+#[test]
+fn test_multi_word_strings_within_arrays() {
+    let mut d = String::from("names[2]: hamza dadda, Arima Kousei");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 4 },
+            Node::String("names"),
+            Node::Array { len: 2, count: 2 },
+            Node::String("hamza dadda"),
+            Node::String("Arima Kousei"),
+        ]
+    );
+}
+
+#[test]
+fn test_multi_word_strings_within_objects() {
+    let mut d = String::from("fullName: Hamza DADDA\nage: 21");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 2, count: 4 },
+            Node::String("fullName"),
+            Node::String("Hamza DADDA"),
+            Node::String("age"),
+            Node::Static(StaticNode::U64(21)),
+        ]
+    );
+}
 #[test]
 fn test_tape_inline_string_array() {
     let mut d = String::from("tags[3]: rust,parser,simd");

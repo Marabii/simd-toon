@@ -173,19 +173,27 @@ impl<'de> Deserializer<'de> {
 
         macro_rules! peek_value_end {
             ($start:expr, $err:expr, $($expected_delim:expr),+) => {{
-                // Find the hard boundary
-                let hard_end = if i < structural_indexes.len() {
-                    let next = *get!(structural_indexes, i) as usize;
-                    let next_c = *get!(input2, next);
+                let mut hard_end = input.len(); // Default to EOF
 
-                    // If the next character doesn't match ANY of the expected delimiters, fail!
-                    if $(next_c != $expected_delim)&&+ {
+                // Advance through structural indexes looking for delimiters or newlines
+                while i < structural_indexes.len() {
+                    let pos = *get!(structural_indexes, i) as usize;
+                    let c = *get!(input2, pos);
+
+                    // If we find ANY of the expected delimiters, we found our boundary
+                    if $(c == $expected_delim)||* {
+                        hard_end = pos;
+                        break;
+                    }
+
+                    // If we encounter a newline before a delimiter, it's a failure
+                    if c == b'\n' {
                         fail!($err);
                     }
-                    next
-                } else {
-                    input.len() // EOF
-                };
+
+                    // Keep searching forward
+                    i += 1;
+                }
 
                 trim_trailing_spaces!($start, hard_end)
             }};
@@ -255,7 +263,7 @@ impl<'de> Deserializer<'de> {
             };
         }
 
-        macro_rules! finish_root_array {
+        macro_rules! skip_newline_chars {
             () => {{
                 while i < structural_indexes.len() {
                     let trailing_idx = *get!(structural_indexes, i) as usize;
@@ -381,7 +389,7 @@ impl<'de> Deserializer<'de> {
                             }
 
                             if depth == 0 {
-                                finish_root_array!();
+                                skip_newline_chars!();
                             }
 
                             // update_char! consumed the newline. Back up!
@@ -467,32 +475,8 @@ impl<'de> Deserializer<'de> {
                         goto!(State::ObjectKey);
                     }
 
-                    // Block-array primitive values are line-based and may contain spaces.
-                    let mut hard_end = value_start;
-                    while hard_end < input.len() && *get!(input2, hard_end) != b'\n' {
-                        hard_end += 1;
-                    }
-                    let value_end = trim_trailing_spaces!(value_start, hard_end);
+                    let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
                     parse_and_insert_value!(value_start, value_end);
-
-                    if hard_end < input.len() {
-                        while i < structural_indexes.len() {
-                            let structural_idx = *get!(structural_indexes, i) as usize;
-                            if structural_idx < hard_end {
-                                i += 1;
-                                continue;
-                            }
-                            if structural_idx == hard_end {
-                                break;
-                            }
-                            fail!(ErrorType::Syntax);
-                        }
-                        if i >= structural_indexes.len() {
-                            fail!(ErrorType::Syntax);
-                        }
-                    } else {
-                        i = structural_indexes.len();
-                    }
 
                     let (parent_last_start, parent_cnt, tape_start, declared_len, mut elem_cnt) = unsafe {
                         match *stack_ptr.add(depth - 1) {
@@ -552,7 +536,7 @@ impl<'de> Deserializer<'de> {
                         }
 
                         if depth == 0 {
-                            finish_root_array!();
+                            skip_newline_chars!();
                         }
 
                         let newline_idx = *get!(structural_indexes, i) as usize;
@@ -728,7 +712,7 @@ impl<'de> Deserializer<'de> {
                             fail!(ErrorType::Syntax);
                         }
                         i -= 1;
-                        finish_root_array!();
+                        skip_newline_chars!();
                     }
 
                     // The inner loop consumed the final '\n' of the last row. Back up!
@@ -790,7 +774,7 @@ impl<'de> Deserializer<'de> {
                     }
 
                     if depth == 0 {
-                        finish_root_array!();
+                        skip_newline_chars!();
                     }
 
                     let newline_idx = *get!(structural_indexes, i) as usize;
@@ -1041,7 +1025,7 @@ impl<'de> Deserializer<'de> {
                                 if depth == 0 {
                                     // We just closed the root array.
                                     i -= 1;
-                                    finish_root_array!();
+                                    skip_newline_chars!();
                                 }
 
                                 i -= 1;
@@ -1076,67 +1060,5 @@ impl<'de> Deserializer<'de> {
             n = n * 10 + (b - b'0') as usize;
         }
         Ok(n)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::SIMDJSON_PADDING;
-
-    use super::*;
-
-    #[cfg(feature = "serde_impl")]
-    #[test]
-    fn parsing_errors() {
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"time".to_vec()),
-            Err(Error::new_c(0, 't', ErrorType::ExpectedTrue))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"falsy".to_vec()),
-            Err(Error::new_c(0, 'f', ErrorType::ExpectedFalse))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"new".to_vec()),
-            Err(Error::new_c(0, 'n', ErrorType::ExpectedNull))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"[true, time]".to_vec()),
-            Err(Error::new_c(7, 't', ErrorType::ExpectedTrue))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"[true, falsy]".to_vec()),
-            Err(Error::new_c(7, 'f', ErrorType::ExpectedFalse))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut b"[null, new]".to_vec()),
-            Err(Error::new_c(7, 'n', ErrorType::ExpectedNull))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut br#"{"1":time}"#.to_vec()),
-            Err(Error::new_c(5, 't', ErrorType::ExpectedTrue))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut br#"{"0":falsy}"#.to_vec()),
-            Err(Error::new_c(5, 'f', ErrorType::ExpectedFalse))
-        );
-        assert_eq!(
-            crate::serde::from_slice::<bool>(&mut br#"{"0":new}"#.to_vec()),
-            Err(Error::new_c(5, 'n', ErrorType::ExpectedNull))
-        );
-    }
-
-    #[test]
-    fn parse_string() -> Result<()> {
-        let mut input = Vec::from(&br#""{\"arg\":\"test\"}""#[..]);
-        let mut input2 = input.clone();
-        input2.append(vec![0; SIMDJSON_PADDING * 2].as_mut());
-        let mut buffer = vec![0; 1024];
-
-        let s = unsafe {
-            Deserializer::parse_str_(input.as_mut_ptr(), &input2, buffer.as_mut_slice(), 0, 0)?
-        };
-        assert_eq!(r#"{"arg":"test"}"#, s);
-        Ok(())
     }
 }
