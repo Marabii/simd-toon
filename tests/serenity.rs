@@ -41,7 +41,7 @@ mod test {
 
     use serde::{Deserialize, Serialize};
     use serde_json::Value as SerdeValue;
-    use simd_json::owned::Value as SimdJsonValue;
+    use simd_toon::owned::Value as SimdJsonValue;
 
     /// An identifier for a Channel
     #[derive(
@@ -50,10 +50,10 @@ mod test {
     pub struct ChannelId(#[serde(with = "snowflake")] pub u64);
 
     #[test]
-    fn simd_json_test() {
+    fn simd_toon_test() {
         let v = SimdJsonValue::from("367538590520967181".to_string());
 
-        let id: ChannelId = simd_json::serde::from_owned_value(v).unwrap();
+        let id: ChannelId = simd_toon::serde::from_owned_value(v).unwrap();
 
         println!("{id:?}");
     }

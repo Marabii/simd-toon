@@ -383,10 +383,10 @@ impl Deserializer<'_> {
     ))]
     #[must_use]
     pub fn algorithm() -> Implementation {
-        if std::is_x86_feature_detected!("avx2") {
-            Implementation::AVX2
-        } else if std::is_x86_feature_detected!("avx512bw") {
+        if std::is_x86_feature_detected!("avx512bw") {
             Implementation::AVX512BW
+        } else if std::is_x86_feature_detected!("avx2") {
+            Implementation::AVX2
         } else if std::is_x86_feature_detected!("sse4.2") {
             Implementation::SSE42
         } else {

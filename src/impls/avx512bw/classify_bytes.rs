@@ -10,6 +10,7 @@ pub enum BasicTypes {
     Number,
     String,
     Boolean(bool),
+    Null,
 }
 
 #[target_feature(enable = "avx512bw")]
@@ -23,6 +24,7 @@ pub unsafe fn classify_bytes_avx512(input: &[u8]) -> BasicTypes {
     match input {
         b"true" => return BasicTypes::Boolean(true),
         b"false" => return BasicTypes::Boolean(false),
+        b"null" => return BasicTypes::Null,
         _ => {}
     }
 

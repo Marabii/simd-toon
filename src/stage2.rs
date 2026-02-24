@@ -39,6 +39,8 @@ pub(crate) enum StackState {
         tape_start: usize,
         declared_len: usize,
         elem_cnt: usize,
+        compact_indent: bool,
+        is_root: bool,
     },
     ArrayItem,
 }
@@ -93,6 +95,9 @@ impl<'de> Deserializer<'de> {
         // Current state of the stage-2 state machine.
         // Example: State::ObjectKey means the parser currently expects an object key.
         let mut state;
+
+        // Accumulator for tracking visual indentation shifts (Compact Arrays / Root Arrays)
+        let mut indent_modifier: isize = 0;
 
         macro_rules! s2try {
             ($e:expr_2021) => {
@@ -173,7 +178,7 @@ impl<'de> Deserializer<'de> {
 
         macro_rules! peek_value_end {
             ($start:expr, $err:expr, $($expected_delim:expr),+) => {{
-                let mut hard_end = input.len(); // Default to EOF
+                let mut hard_end = input.len();
 
                 // Advance through structural indexes looking for delimiters or newlines
                 while i < structural_indexes.len() {
@@ -214,6 +219,7 @@ impl<'de> Deserializer<'de> {
             }};
         }
 
+        // Currently simd-toon only works on CPUs supporting AVX512BW, I'll work on other simd srchitectures in the future.
         macro_rules! parse_and_insert_value {
             ($start:expr, $end:expr) => {
                 let value_bytes = &input2[$start..$end];
@@ -233,6 +239,9 @@ impl<'de> Deserializer<'de> {
                     }
                     crate::impls::avx512bw::BasicTypes::Boolean(b) => {
                         insert_res!(Node::Static(StaticNode::Bool(b)));
+                    }
+                    crate::impls::avx512bw::BasicTypes::Null => {
+                        insert_res!(Node::Static(StaticNode::Null));
                     }
                 }
             };
@@ -265,19 +274,22 @@ impl<'de> Deserializer<'de> {
 
         macro_rules! skip_newline_chars {
             () => {{
-                while i < structural_indexes.len() {
-                    let trailing_idx = *get!(structural_indexes, i) as usize;
-                    if *get!(input2, trailing_idx) == b'\n' {
-                        i += 1;
-                    } else {
-                        fail!(ErrorType::Syntax);
+                for &idx in &structural_indexes[i..] {
+                    let trailing_idx = idx as usize;
+                    unsafe {
+                        if *input2.get_unchecked(trailing_idx) == b'\n' {
+                            i += 1;
+                        } else {
+                            fail!(ErrorType::Syntax);
+                        }
                     }
                 }
+                let _ = i;
                 success!();
             }};
         }
 
-        if structural_indexes.len() < 2 {
+        if unlikely!(structural_indexes.len() < 2) {
             fail!(ErrorType::NoStructure);
         }
 
@@ -285,18 +297,17 @@ impl<'de> Deserializer<'de> {
         idx = *get!(structural_indexes, 0) as usize;
         c = *get!(input2, idx);
 
-        if c == b'\n' {
+        if unlikely!(c == b'\n') {
             fail!(ErrorType::ExpectedObjectKey);
         }
 
         if c == b'[' {
-            // Root array: [N]: ...
-            i = 1; // consume '['
+            i = 1;
 
             update_char!();
             let digit_start = idx;
             update_char!();
-            if c != b']' {
+            if unlikely!(c != b']') {
                 fail!(ErrorType::InvalidArrayHeader);
             }
             let digit_end = idx;
@@ -425,6 +436,19 @@ impl<'de> Deserializer<'de> {
                         count: 0,
                     });
 
+                    let compact_indent = if depth == 0 {
+                        false
+                    } else {
+                        unsafe {
+                            matches!(*stack_ptr.add(depth - 1), StackState::ArrayItem) && cnt == 1
+                        }
+                    };
+
+                    // shift visual indent expectations back 2 spaces
+                    if compact_indent {
+                        indent_modifier -= 2;
+                    }
+
                     unsafe {
                         stack_ptr.add(depth).write(StackState::Array {
                             parent_last_start: last_start,
@@ -432,6 +456,8 @@ impl<'de> Deserializer<'de> {
                             tape_start: array_tape_start,
                             declared_len,
                             elem_cnt: 0,
+                            compact_indent,
+                            is_root: depth == 0,
                         });
                     }
                     depth += 1;
@@ -464,10 +490,23 @@ impl<'de> Deserializer<'de> {
                         false
                     };
 
+                    let is_root_array = unsafe {
+                        match *stack_ptr.add(depth - 1) {
+                            StackState::Array { is_root, .. } => is_root,
+                            _ => false,
+                        }
+                    };
+
                     if is_object_item {
                         // Rewind so ObjectKey can consume the first key token naturally.
                         i -= 1;
                         unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
+
+                        // Root Array objects are visually indented 2 extra spaces
+                        if is_root_array {
+                            indent_modifier += 2;
+                        }
+
                         last_start = r_i;
                         insert_res!(Node::Object { len: 0, count: 0 });
                         depth += 1;
@@ -478,7 +517,15 @@ impl<'de> Deserializer<'de> {
                     let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
                     parse_and_insert_value!(value_start, value_end);
 
-                    let (parent_last_start, parent_cnt, tape_start, declared_len, mut elem_cnt) = unsafe {
+                    let (
+                        parent_last_start,
+                        parent_cnt,
+                        tape_start,
+                        declared_len,
+                        mut elem_cnt,
+                        compact_indent,
+                        is_root,
+                    ) = unsafe {
                         match *stack_ptr.add(depth - 1) {
                             StackState::Array {
                                 parent_last_start,
@@ -486,12 +533,16 @@ impl<'de> Deserializer<'de> {
                                 tape_start,
                                 declared_len,
                                 elem_cnt,
+                                compact_indent,
+                                is_root,
                             } => (
                                 parent_last_start,
                                 parent_cnt,
                                 tape_start,
                                 declared_len,
                                 elem_cnt,
+                                compact_indent,
+                                is_root,
                             ),
                             _ => {
                                 fail!(ErrorType::NoStructure);
@@ -507,6 +558,8 @@ impl<'de> Deserializer<'de> {
                             tape_start,
                             declared_len,
                             elem_cnt,
+                            compact_indent,
+                            is_root,
                         });
                     }
 
@@ -527,6 +580,11 @@ impl<'de> Deserializer<'de> {
                         depth -= 1;
                         last_start = parent_last_start;
                         cnt = parent_cnt;
+
+                        // Restore array reduction upon exit
+                        if compact_indent {
+                            indent_modifier += 2;
+                        }
 
                         if i >= structural_indexes.len() {
                             if depth == 0 {
@@ -564,7 +622,10 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let actual_ws = next_idx - newline_idx - 1;
-                    let marker_ws = if depth == 1 { 2 } else { (depth - 1) * 2 };
+
+                    let base_marker = if depth == 1 { 2 } else { (depth - 1) * 2 } as isize;
+                    let marker_ws = (base_marker + indent_modifier) as usize;
+
                     if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
                         fail!(ErrorType::ArrayCountMismatch);
                     }
@@ -666,13 +727,10 @@ impl<'de> Deserializer<'de> {
                                     fail!(ErrorType::Syntax);
                                 }
                                 update_char!();
-                            } else {
-                                // Last field: consume trailing '\n' if present
-                                if i < structural_indexes.len() {
-                                    update_char!();
-                                    if c != b'\n' {
-                                        fail!(ErrorType::Syntax);
-                                    }
+                            } else if i < structural_indexes.len() {
+                                update_char!();
+                                if c != b'\n' {
+                                    fail!(ErrorType::Syntax);
                                 }
                             }
                         }
@@ -708,7 +766,7 @@ impl<'de> Deserializer<'de> {
 
                     if depth == 0 {
                         // Root tabular array: accept only trailing newlines.
-                        if i == 0 {
+                        if unlikely!(i == 0) {
                             fail!(ErrorType::Syntax);
                         }
                         i -= 1;
@@ -763,7 +821,7 @@ impl<'de> Deserializer<'de> {
                         }
                     }
 
-                    if elem_count != declared_len {
+                    if unlikely!(elem_count != declared_len) {
                         fail!(ErrorType::ArrayCountMismatch);
                     }
                     if i >= structural_indexes.len() {
@@ -789,7 +847,7 @@ impl<'de> Deserializer<'de> {
                         let newline_idx = idx;
 
                         if i >= structural_indexes.len() {
-                            insert_res!(Node::Static(StaticNode::Null));
+                            insert_res!(Node::Object { len: 0, count: 0 });
                             goto!(State::ScopeEnd);
                         }
 
@@ -799,7 +857,9 @@ impl<'de> Deserializer<'de> {
                         }
 
                         let actual_ws = next_idx - newline_idx - 1;
-                        let child_ws = depth * 2;
+
+                        // Clean math replacing the `object_expected_ws!` macro
+                        let child_ws = ((depth * 2) as isize + indent_modifier) as usize;
 
                         if actual_ws == child_ws {
                             // Push scope
@@ -851,7 +911,7 @@ impl<'de> Deserializer<'de> {
                         fail!(ErrorType::NoStructure);
                     }
 
-                    i += 1; // Consume the newline
+                    i += 1;
 
                     if i >= structural_indexes.len() {
                         goto!(State::ScopeEnd);
@@ -863,13 +923,15 @@ impl<'de> Deserializer<'de> {
                     }
 
                     let actual_ws = next_idx - newline_idx - 1;
-                    let sibling_ws = (depth - 1) * 2;
+
+                    // Clean math replacing the `object_expected_ws!` macro
+                    let sibling_ws = (((depth - 1) * 2) as isize + indent_modifier) as usize;
 
                     if actual_ws == sibling_ws {
-                        goto!(State::ObjectKey); // Sibling found, continue current object
+                        goto!(State::ObjectKey);
                     }
                     if actual_ws < sibling_ws && actual_ws.is_multiple_of(2) {
-                        goto!(State::ScopeEnd); // Indentation dropped, close object
+                        goto!(State::ScopeEnd);
                     }
 
                     fail!(ErrorType::InvalidIndentation);
@@ -904,7 +966,7 @@ impl<'de> Deserializer<'de> {
                                 cnt = c;
 
                                 if i >= structural_indexes.len() {
-                                    goto!(State::ScopeEnd); // Loop again for EOF
+                                    goto!(State::ScopeEnd);
                                 }
 
                                 // We dropped into ScopeEnd because CheckIndentation found
@@ -934,6 +996,8 @@ impl<'de> Deserializer<'de> {
                                     tape_start,
                                     declared_len,
                                     mut elem_cnt,
+                                    compact_indent,
+                                    is_root,
                                 ) = match *stack_ptr.add(depth - 1) {
                                     StackState::Array {
                                         parent_last_start,
@@ -941,17 +1005,26 @@ impl<'de> Deserializer<'de> {
                                         tape_start,
                                         declared_len,
                                         elem_cnt,
+                                        compact_indent,
+                                        is_root,
                                     } => (
                                         parent_last_start,
                                         parent_cnt,
                                         tape_start,
                                         declared_len,
                                         elem_cnt,
+                                        compact_indent,
+                                        is_root,
                                     ),
                                     _ => {
                                         fail!(ErrorType::NoStructure);
                                     }
                                 };
+
+                                // O(1) Accumulator: Remove the root bias since we just dropped the item object
+                                if is_root {
+                                    indent_modifier -= 2;
+                                }
 
                                 elem_cnt += 1;
                                 unsafe {
@@ -961,6 +1034,8 @@ impl<'de> Deserializer<'de> {
                                         tape_start,
                                         declared_len,
                                         elem_cnt,
+                                        compact_indent,
+                                        is_root,
                                     });
                                 }
 
@@ -988,7 +1063,10 @@ impl<'de> Deserializer<'de> {
                                     }
 
                                     let actual_ws = next_idx - newline_idx - 1;
-                                    let marker_ws = if depth == 1 { 2 } else { (depth - 1) * 2 };
+                                    let base_marker =
+                                        if depth == 1 { 2 } else { (depth - 1) * 2 } as isize;
+                                    let marker_ws = (base_marker + indent_modifier) as usize;
+
                                     if actual_ws < marker_ws && actual_ws.is_multiple_of(2) {
                                         fail!(ErrorType::ArrayCountMismatch);
                                     }
@@ -1015,6 +1093,10 @@ impl<'de> Deserializer<'de> {
                                 last_start = parent_last_start;
                                 cnt = parent_cnt;
 
+                                if compact_indent {
+                                    indent_modifier += 2;
+                                }
+
                                 if i >= structural_indexes.len() {
                                     if depth == 0 {
                                         success!();
@@ -1023,7 +1105,6 @@ impl<'de> Deserializer<'de> {
                                 }
 
                                 if depth == 0 {
-                                    // We just closed the root array.
                                     i -= 1;
                                     skip_newline_chars!();
                                 }

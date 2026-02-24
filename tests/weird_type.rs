@@ -81,11 +81,11 @@ fn test_simd_json() {
     unsafe {
         assert_eq!(
             MISSING_EXPECTED,
-            simd_json::from_str(&mut MISSING_INPUT.to_owned()).unwrap()
+            simd_toon::from_str(&mut MISSING_INPUT.to_owned()).unwrap()
         );
         assert_eq!(
             PRESENT_EXPECTED,
-            simd_json::from_str(&mut PRESENT_INPUT.to_owned()).unwrap()
+            simd_toon::from_str(&mut PRESENT_INPUT.to_owned()).unwrap()
         );
     }
 }

@@ -1,14 +1,13 @@
 [package]
-name = "simd-json"
+name = "simd-toon"
 version = "0.17.0"
-authors = ["Heinz N. Gies <heinz@licenser.net>", "Sunny Gleason"]
+author = "Hamza DADDA"
 edition = "2024"
 exclude = ["data/*", "fuzz/*", "fuzz.sh"]
 license = "Apache-2.0 OR MIT"
-description = "High performance JSON parser based on a port of simdjson"
-repository = "https://github.com/simd-lite/simd-json"
+description = "High performance TOON parser based on a port of simdjson. This project is based on a fork of https://github.com/simd-lite/simd-json"
+repository = "https://github.com/Marabii/simd-toon"
 readme = "README.md"
-documentation = "https://docs.rs/simd-json"
 rust-version = "1.89"
 
 [dependencies]

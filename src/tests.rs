@@ -41,9 +41,11 @@ fn test_tape_object_simple() {
 
 #[test]
 fn playground() {
-    let mut d = String::from("items[2]{sku,qty,price}:\n  A1,\"Hello world\",9.99\n  B2,1,14.5\n");
+    let mut d = String::from(
+        r#"name:"#,
+    );
     let d = unsafe { d.as_bytes_mut() };
-    let simd = Deserializer::from_slice(d).expect("");
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
     println!("{:?}", simd.tape);
 }
 
@@ -458,6 +460,48 @@ fn test_tape_root_inline_array_strings() {
             Node::Array { len: 2, count: 2 },
             Node::String("something"),
             Node::String("something else"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_root_block_array_object_items() {
+    let mut d = String::from("[1]:\n  - id: 0\n    uuid: \"abc\"");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    println!("{:?}", simd.tape);
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Array { len: 1, count: 5 },
+            Node::Object { len: 2, count: 4 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(0)),
+            Node::String("uuid"),
+            Node::String("abc"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_root_block_array_object_nested_items() {
+    let mut d =
+        String::from("[1]:\n  - id: 0\n    metadata:\n      timestamp: \"2025-01-01T00:00:00Z\"");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Array { len: 1, count: 7 },
+            Node::Object { len: 2, count: 6 },
+            Node::String("id"),
+            Node::Static(StaticNode::U64(0)),
+            Node::String("metadata"),
+            Node::Object { len: 1, count: 2 },
+            Node::String("timestamp"),
+            Node::String("2025-01-01T00:00:00Z"),
         ]
     );
 }
