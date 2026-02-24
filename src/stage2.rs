@@ -514,8 +514,68 @@ impl<'de> Deserializer<'de> {
                         goto!(State::ObjectKey);
                     }
 
-                    let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
-                    parse_and_insert_value!(value_start, value_end);
+                    if c == b'[' {
+                        // Inline sub-array item: - [N]: v1,v2,...
+                        update_char!();
+                        let digit_start = idx;
+                        update_char!();
+                        if c != b']' {
+                            fail!(ErrorType::InvalidArrayHeader);
+                        }
+                        let digit_end = idx;
+                        let sub_len =
+                            s2try!(Self::parse_array_len(input2, digit_start, digit_end));
+                        update_char!();
+                        if c != b':' {
+                            fail!(ErrorType::InvalidArrayHeader);
+                        }
+
+                        let sub_tape_start = r_i;
+                        insert_res!(Node::Array {
+                            len: sub_len,
+                            count: 0,
+                        });
+
+                        let mut sub_elem_count: usize = 0;
+                        loop {
+                            update_char!();
+                            let v_start = idx;
+                            let v_end =
+                                peek_value_end!(v_start, ErrorType::Syntax, b',', b'\n');
+                            parse_and_insert_value!(v_start, v_end);
+                            sub_elem_count += 1;
+
+                            if i >= structural_indexes.len() {
+                                break;
+                            }
+                            update_char!();
+                            if c == b',' {
+                                // continue to next element
+                            } else if c == b'\n' {
+                                // Back up so the outer newline-consumption logic sees it
+                                i -= 1;
+                                break;
+                            } else {
+                                fail!(ErrorType::Syntax);
+                            }
+                        }
+
+                        unsafe {
+                            match *res_ptr.add(sub_tape_start) {
+                                Node::Array { ref mut count, .. } => {
+                                    *count = r_i - sub_tape_start - 1;
+                                }
+                                _ => unreachable!("sub-array backfill expects Array node"),
+                            }
+                        }
+
+                        if unlikely!(sub_elem_count != sub_len) {
+                            fail!(ErrorType::ArrayCountMismatch);
+                        }
+                    } else {
+                        let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
+                        parse_and_insert_value!(value_start, value_end);
+                    }
 
                     let (
                         parent_last_start,

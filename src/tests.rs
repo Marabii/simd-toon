@@ -42,7 +42,13 @@ fn test_tape_object_simple() {
 #[test]
 fn playground() {
     let mut d = String::from(
-        r#"name:"#,
+        r#"pairs[1]:
+  - name: Hamza
+    fk:
+      something[2]:
+        - [2]: 1,2
+        - [2]: 3,4
+"#,
     );
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("failed to parse");
@@ -480,6 +486,31 @@ fn test_tape_root_block_array_object_items() {
             Node::Static(StaticNode::U64(0)),
             Node::String("uuid"),
             Node::String("abc"),
+        ]
+    );
+}
+
+#[test]
+fn test_tape_block_array_of_inline_arrays() {
+    // pairs[2]:
+    //   - [2]: 1,2
+    //   - [2]: 3,4
+    let mut d = String::from("pairs[2]:\n  - [2]: 1,2\n  - [2]: 3,4");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 8 },
+            Node::String("pairs"),
+            Node::Array { len: 2, count: 6 },
+            Node::Array { len: 2, count: 2 },
+            Node::Static(StaticNode::U64(1)),
+            Node::Static(StaticNode::U64(2)),
+            Node::Array { len: 2, count: 2 },
+            Node::Static(StaticNode::U64(3)),
+            Node::Static(StaticNode::U64(4)),
         ]
     );
 }
