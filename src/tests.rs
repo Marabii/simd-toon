@@ -6,7 +6,7 @@ mod serde;
 mod impls;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{Deserializer, ErrorType, tape::Node};
+use crate::{Deserializer, tape::Node};
 #[cfg(not(target_arch = "wasm32"))]
 use value_trait::prelude::*;
 
@@ -83,12 +83,8 @@ fn test_nested_block_array_items() {
 
 #[test]
 fn playground() {
-    let mut d = String::from(
-        r#"rows[1]:
-  - elements[1]:
-      - distance:
-          text: 1 m"#,
-    );
+    let mut d = String::from(r#"name:
+"#);
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("failed to parse");
     println!("{:?}", simd.tape);

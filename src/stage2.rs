@@ -42,7 +42,9 @@ pub(crate) enum StackState {
         compact_indent: bool,
         is_root: bool,
     },
-    ArrayItem,
+    ArrayItem {
+        item_bias_applied: bool,
+    },
 }
 
 impl<'de> Deserializer<'de> {
@@ -192,7 +194,7 @@ impl<'de> Deserializer<'de> {
                     }
 
                     // If we encounter a newline before a delimiter, it's a failure
-                    if c == b'\n' {
+                    if unlikely!(c == b'\n') {
                         fail!($err);
                     }
 
@@ -440,7 +442,8 @@ impl<'de> Deserializer<'de> {
                         false
                     } else {
                         unsafe {
-                            matches!(*stack_ptr.add(depth - 1), StackState::ArrayItem) && cnt == 1
+                            matches!(*stack_ptr.add(depth - 1), StackState::ArrayItem { .. })
+                                && cnt == 1
                         }
                     };
 
@@ -504,7 +507,11 @@ impl<'de> Deserializer<'de> {
                     if is_object_item {
                         // Rewind so ObjectKey can consume the first key token naturally.
                         i -= 1;
-                        unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
+                        unsafe {
+                            stack_ptr.add(depth).write(StackState::ArrayItem {
+                                item_bias_applied: is_root_array || is_compact_array,
+                            })
+                        };
 
                         // Object items get a +2 visual bias:
                         // - root arrays need it for "- key: value" alignment
@@ -538,7 +545,11 @@ impl<'de> Deserializer<'de> {
 
                         // We are about to branch into an entirely new Array scope.
                         // We must record that the CURRENT scope just got an item.
-                        unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
+                        unsafe {
+                            stack_ptr.add(depth).write(StackState::ArrayItem {
+                                item_bias_applied: false,
+                            })
+                        };
                         depth += 1; // ArrayRouter expects to be placed on a new depth level
                         cnt = 1;
                         goto!(State::ArrayRouter(sub_len));
@@ -1019,7 +1030,7 @@ impl<'de> Deserializer<'de> {
                                 }
                                 fail!();
                             }
-                            StackState::ArrayItem => {
+                            StackState::ArrayItem { item_bias_applied } => {
                                 let (
                                     parent_last_start,
                                     parent_cnt,
@@ -1051,8 +1062,10 @@ impl<'de> Deserializer<'de> {
                                     }
                                 };
 
-                                // Root object-item bias is consumed immediately.
-                                if is_root {
+                                let pending_compact_item_bias = item_bias_applied && !is_root;
+
+                                // Root object-item bias must be consumed before marker checks.
+                                if item_bias_applied && is_root {
                                     indent_modifier -= 2;
                                 }
 
@@ -1107,17 +1120,16 @@ impl<'de> Deserializer<'de> {
                                         fail!(ErrorType::InvalidListMarker);
                                     }
 
-                                    // Compact arrays keep item bias for marker validation,
-                                    // then drop it before parsing the next object item.
-                                    if compact_indent {
+                                    // Compact object-item bias is consumed after marker validation.
+                                    if pending_compact_item_bias {
                                         indent_modifier -= 2;
                                     }
 
                                     goto!(State::ParseBlockArrayItem);
                                 }
 
-                                // Drop the current compact item bias before leaving the array scope.
-                                if compact_indent {
+                                // Final compact object item: consume its item bias before exit.
+                                if pending_compact_item_bias {
                                     indent_modifier -= 2;
                                 }
 
