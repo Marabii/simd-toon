@@ -490,10 +490,14 @@ impl<'de> Deserializer<'de> {
                         false
                     };
 
-                    let is_root_array = unsafe {
+                    let (is_root_array, is_compact_array) = unsafe {
                         match *stack_ptr.add(depth - 1) {
-                            StackState::Array { is_root, .. } => is_root,
-                            _ => false,
+                            StackState::Array {
+                                is_root,
+                                compact_indent,
+                                ..
+                            } => (is_root, compact_indent),
+                            _ => (false, false),
                         }
                     };
 
@@ -502,8 +506,10 @@ impl<'de> Deserializer<'de> {
                         i -= 1;
                         unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
 
-                        // Root Array objects are visually indented 2 extra spaces
-                        if is_root_array {
+                        // Object items get a +2 visual bias:
+                        // - root arrays need it for "- key: value" alignment
+                        // - compact arrays need it so nested key-values align under the item key
+                        if is_root_array || is_compact_array {
                             indent_modifier += 2;
                         }
 
@@ -515,7 +521,9 @@ impl<'de> Deserializer<'de> {
                     }
 
                     if c == b'[' {
-                        // Inline sub-array item: - [N]: v1,v2,...
+                        // Sub-array item: - [N]: ...
+
+                        // Parse [N]
                         update_char!();
                         let digit_start = idx;
                         update_char!();
@@ -523,55 +531,17 @@ impl<'de> Deserializer<'de> {
                             fail!(ErrorType::InvalidArrayHeader);
                         }
                         let digit_end = idx;
-                        let sub_len =
-                            s2try!(Self::parse_array_len(input2, digit_start, digit_end));
+                        let sub_len = s2try!(Self::parse_array_len(input2, digit_start, digit_end));
+
+                        // Expect '{' (tabular) or ':' (inline/block)
                         update_char!();
-                        if c != b':' {
-                            fail!(ErrorType::InvalidArrayHeader);
-                        }
 
-                        let sub_tape_start = r_i;
-                        insert_res!(Node::Array {
-                            len: sub_len,
-                            count: 0,
-                        });
-
-                        let mut sub_elem_count: usize = 0;
-                        loop {
-                            update_char!();
-                            let v_start = idx;
-                            let v_end =
-                                peek_value_end!(v_start, ErrorType::Syntax, b',', b'\n');
-                            parse_and_insert_value!(v_start, v_end);
-                            sub_elem_count += 1;
-
-                            if i >= structural_indexes.len() {
-                                break;
-                            }
-                            update_char!();
-                            if c == b',' {
-                                // continue to next element
-                            } else if c == b'\n' {
-                                // Back up so the outer newline-consumption logic sees it
-                                i -= 1;
-                                break;
-                            } else {
-                                fail!(ErrorType::Syntax);
-                            }
-                        }
-
-                        unsafe {
-                            match *res_ptr.add(sub_tape_start) {
-                                Node::Array { ref mut count, .. } => {
-                                    *count = r_i - sub_tape_start - 1;
-                                }
-                                _ => unreachable!("sub-array backfill expects Array node"),
-                            }
-                        }
-
-                        if unlikely!(sub_elem_count != sub_len) {
-                            fail!(ErrorType::ArrayCountMismatch);
-                        }
+                        // We are about to branch into an entirely new Array scope.
+                        // We must record that the CURRENT scope just got an item.
+                        unsafe { stack_ptr.add(depth).write(StackState::ArrayItem) };
+                        depth += 1; // ArrayRouter expects to be placed on a new depth level
+                        cnt = 1;
+                        goto!(State::ArrayRouter(sub_len));
                     } else {
                         let value_end = peek_value_end!(value_start, ErrorType::Syntax, b'\n');
                         parse_and_insert_value!(value_start, value_end);
@@ -1081,7 +1051,7 @@ impl<'de> Deserializer<'de> {
                                     }
                                 };
 
-                                // O(1) Accumulator: Remove the root bias since we just dropped the item object
+                                // Root object-item bias is consumed immediately.
                                 if is_root {
                                     indent_modifier -= 2;
                                 }
@@ -1137,7 +1107,18 @@ impl<'de> Deserializer<'de> {
                                         fail!(ErrorType::InvalidListMarker);
                                     }
 
+                                    // Compact arrays keep item bias for marker validation,
+                                    // then drop it before parsing the next object item.
+                                    if compact_indent {
+                                        indent_modifier -= 2;
+                                    }
+
                                     goto!(State::ParseBlockArrayItem);
+                                }
+
+                                // Drop the current compact item bias before leaving the array scope.
+                                if compact_indent {
+                                    indent_modifier -= 2;
                                 }
 
                                 unsafe {

@@ -6,7 +6,7 @@ mod serde;
 mod impls;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{Deserializer, tape::Node};
+use crate::{Deserializer, ErrorType, tape::Node};
 #[cfg(not(target_arch = "wasm32"))]
 use value_trait::prelude::*;
 
@@ -40,19 +40,86 @@ fn test_tape_object_simple() {
 }
 
 #[test]
-fn playground() {
+fn test_nested_block_array_items() {
     let mut d = String::from(
-        r#"pairs[1]:
-  - name: Hamza
-    fk:
-      something[2]:
-        - [2]: 1,2
-        - [2]: 3,4
+        r#"geodata[3]:
+  - [2]: 7.69,47.54
+  - [2]:
+    - 8.71
+    - 47.69
+  - [2]{lat,lng}:
+    9.12,48.11
+    9.15,48.15
 "#,
     );
     let d = unsafe { d.as_bytes_mut() };
     let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 19 },
+            Node::String("geodata"),
+            Node::Array { len: 3, count: 17 },
+            Node::Array { len: 2, count: 2 },
+            Node::Static(StaticNode::F64(7.69)),
+            Node::Static(StaticNode::F64(47.54)),
+            Node::Array { len: 2, count: 2 },
+            Node::Static(StaticNode::F64(8.71)),
+            Node::Static(StaticNode::F64(47.69)),
+            Node::Array { len: 2, count: 10 },
+            Node::Object { len: 2, count: 4 },
+            Node::String("lat"),
+            Node::Static(StaticNode::F64(9.12)),
+            Node::String("lng"),
+            Node::Static(StaticNode::F64(48.11)),
+            Node::Object { len: 2, count: 4 },
+            Node::String("lat"),
+            Node::Static(StaticNode::F64(9.15)),
+            Node::String("lng"),
+            Node::Static(StaticNode::F64(48.15)),
+        ]
+    );
+}
+
+#[test]
+fn playground() {
+    let mut d = String::from(
+        r#"rows[1]:
+  - elements[1]:
+      - distance:
+          text: 1 m"#,
+    );
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
     println!("{:?}", simd.tape);
+}
+
+#[test]
+fn test_deeply_nested_rows_elements() {
+    let mut d = String::from(
+        r#"rows[1]:
+  - elements[1]:
+      - distance:
+          text: 1 m"#,
+    );
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 1, count: 10 },
+            Node::String("rows"),
+            Node::Array { len: 1, count: 8 },
+            Node::Object { len: 1, count: 7 },
+            Node::String("elements"),
+            Node::Array { len: 1, count: 5 },
+            Node::Object { len: 1, count: 4 },
+            Node::String("distance"),
+            Node::Object { len: 1, count: 2 },
+            Node::String("text"),
+            Node::String("1 m"),
+        ]
+    );
 }
 
 #[test]
@@ -535,4 +602,28 @@ fn test_tape_root_block_array_object_nested_items() {
             Node::String("2025-01-01T00:00:00Z"),
         ]
     );
+}
+
+#[test]
+fn test_compact_array_multiple_object_items_with_nested_object_fields() {
+    let mut d = String::from(
+        r#"rows[1]:
+  - elements[2]:
+      - distance:
+          text: "4,490 km"
+          value: 4489862
+        duration:
+          text: 1 day 16 hours
+          value: 145589
+        status: OK
+      - distance:
+          text: "1,270 km"
+          value: 1270445
+        duration:
+          text: 12 hours 10 mins
+          value: 43773
+        status: OK"#,
+    );
+    let d = unsafe { d.as_bytes_mut() };
+    let _ = Deserializer::from_slice(d).expect("failed to parse");
 }
