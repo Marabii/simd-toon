@@ -623,3 +623,22 @@ fn test_compact_array_multiple_object_items_with_nested_object_fields() {
     let d = unsafe { d.as_bytes_mut() };
     let _ = Deserializer::from_slice(d).expect("failed to parse");
 }
+
+#[test]
+fn test_empty_object_before_sibling_key() {
+    let mut d = String::from("morphTargets:\nnormals[1]: 0");
+    let d = unsafe { d.as_bytes_mut() };
+    let simd = Deserializer::from_slice(d).expect("failed to parse");
+
+    assert_eq!(
+        simd.tape,
+        [
+            Node::Object { len: 2, count: 5 },
+            Node::String("morphTargets"),
+            Node::Object { len: 0, count: 0 },
+            Node::String("normals"),
+            Node::Array { len: 1, count: 1 },
+            Node::Static(StaticNode::U64(0)),
+        ]
+    );
+}

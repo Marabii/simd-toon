@@ -915,8 +915,9 @@ impl<'de> Deserializer<'de> {
                             cnt = 0;
                             goto!(State::ObjectKey);
                         } else {
-                            // It wasn't a child object, just a null value
-                            insert_res!(Node::Static(StaticNode::Null));
+                            // A key followed by a newline but no child indentation represents
+                            // an empty object
+                            insert_res!(Node::Object { len: 0, count: 0 });
 
                             // pushed `i` past the newline. Back up!
                             i -= 1;
