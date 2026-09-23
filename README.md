@@ -52,6 +52,9 @@ times from `cargo bench`, both parsers decoding equivalent TOON input):
 `benches/` for the full Criterion reports). These numbers will move as the remaining 44 conformance
 fixtures get fixed, since some of that work touches hot paths.
 
+<img width="1600" height="914" alt="simd_toon_throughput_comparison" src="https://github.com/user-attachments/assets/c829ce39-6762-436c-819e-29f80ad10801" />
+
+
 This parser currently only works on CPUs supporting AVX2
 
 ### Allocator
